@@ -1,18 +1,23 @@
-import unittest
+"""Tests for task_scheduler.py."""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import Iterator
+from collections.abc import Mapping
+from collections.abc import Sequence
 from datetime import datetime
 from datetime import timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING
+from typing import Any
 from typing import Final
-from typing import Iterator
-from typing import Optional
-from typing import Sequence
-from typing import Tuple
-from typing import cast
 
+import pytest
 from dateutil.relativedelta import relativedelta
 
 from task_scheduler import Action
 from task_scheduler import ActionCollection
-from task_scheduler import ActionType
 from task_scheduler import BootTrigger
 from task_scheduler import ComHandlerAction
 from task_scheduler import Compatibility
@@ -38,6 +43,7 @@ from task_scheduler import RegisteredTaskCollection
 from task_scheduler import RegistrationInfo
 from task_scheduler import RegistrationTrigger
 from task_scheduler import RepetitionPattern
+from task_scheduler import RunFlags
 from task_scheduler import RunLevel
 from task_scheduler import RunningTask
 from task_scheduler import RunningTaskCollection
@@ -49,21 +55,23 @@ from task_scheduler import State
 from task_scheduler import TaskDefinition
 from task_scheduler import TaskFolder
 from task_scheduler import TaskFolderCollection
-from task_scheduler import TaskFolderExists
-from task_scheduler import TaskFolderNotFound
+from task_scheduler import TaskFolderExistsError
+from task_scheduler import TaskFolderNotFoundError
 from task_scheduler import TaskNamedValueCollection
 from task_scheduler import TaskNamedValuePair
-from task_scheduler import TaskNotFound
+from task_scheduler import TaskNotFoundError
 from task_scheduler import TaskService
 from task_scheduler import TaskSettings
 from task_scheduler import TimeTrigger
 from task_scheduler import Trigger
 from task_scheduler import TriggerCollection
-from task_scheduler import TriggerType
 from task_scheduler import WeeklyTrigger
 from task_scheduler import WeeksOfMonth
 from task_scheduler import from_duration_str
 from task_scheduler import to_duration_str
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 SERVICE: Final[TaskService] = TaskService()
 SERVICE.connect()
@@ -71,2508 +79,2249 @@ SERVICE.connect()
 ROOT = SERVICE.get_folder("\\")
 
 
-class TestTaskService(unittest.TestCase):
+class TestTaskService:
+    """Tests for TaskService."""
+
     def test_same_instance(self) -> None:
+        """Test to check that only one instance of TaskService is created."""
         new_service = TaskService()
 
-        self.assertIs(SERVICE, new_service)
+        assert SERVICE is new_service
 
     def test_connected(self) -> None:
+        """Test for TaskService.connected."""
         connected: bool = SERVICE.connected
-        self.assertIsInstance(connected, bool)
+        assert isinstance(connected, bool)
 
+    def test_connected_domain(self) -> None:
+        """Test for TaskService.connected_domain."""
         connected_domain: str = SERVICE.connected_domain
-        self.assertIsInstance(connected_domain, str)
+        assert isinstance(connected_domain, str)
 
+    def test_connected_user(self) -> None:
+        """Test for TaskService.connected_user."""
         connected_user: str = SERVICE.connected_user
-        self.assertIsInstance(connected_user, str)
+        assert isinstance(connected_user, str)
 
+    def test_highest_version(self) -> None:
+        """Test for TaskService.highest_version."""
         highest_version: int = SERVICE.highest_version
-        self.assertIsInstance(highest_version, int)
+        assert isinstance(highest_version, int)
 
+    def test_target_server(self) -> None:
+        """Test for TaskService.target_server."""
         target_server: str = SERVICE.target_server
-        self.assertIsInstance(target_server, str)
+        assert isinstance(target_server, str)
+
+    def test_connect(self) -> None:
+        """Test for TaskService.connect()."""
+        # TODO(Ryan): test_connect
 
     def test_get_folder(self) -> None:
+        """Test for TaskService.get_folder()."""
         folder: TaskFolder = SERVICE.get_folder("\\")
-        self.assertIsInstance(folder, TaskFolder)
+        assert isinstance(folder, TaskFolder)
 
-        self.assertRaises(TaskFolderNotFound, SERVICE.get_folder, "\\Folder\\Does\\Not\\Exist")
+    def test_get_folder_not_exists(self) -> None:
+        """Test for TaskService.get_folder() with a folder that does not exist."""
+        with pytest.raises(TaskFolderNotFoundError):
+            SERVICE.get_folder("\\FolderNotExists")
 
     def test_get_running_task(self) -> None:
+        """Test for TaskService.get_running_tasks()."""
         tasks: RunningTaskCollection = SERVICE.get_running_tasks()
-        self.assertIsInstance(tasks, RunningTaskCollection)
+        assert isinstance(tasks, RunningTaskCollection)
 
         hidden_tasks: RunningTaskCollection = SERVICE.get_running_tasks(True)
-        self.assertIsInstance(hidden_tasks, RunningTaskCollection)
+        assert isinstance(hidden_tasks, RunningTaskCollection)
 
     def test_new_task(self) -> None:
+        """Test for TaskService.new_task()."""
         new_task: TaskDefinition = SERVICE.new_task()
-        self.assertIsInstance(new_task, TaskDefinition)
+        assert isinstance(new_task, TaskDefinition)
 
 
-class TestTaskFolder(unittest.TestCase):
-    def test_eq(self) -> None:
+class TestTaskFolder:
+    """Tests for TaskFolder."""
+
+    def test_dunder_eq(self) -> None:
+        """Test for TaskService.__eq__()."""
         folder: TaskFolder = ROOT.create_folder("TestEq")
         try:
-            other: TaskFolder = SERVICE.get_folder(folder.path)
-            self.assertEqual(folder, other)
+            other: TaskFolder = ROOT.get_folder(folder.path)
+            assert folder == other
         finally:
             ROOT.delete_folder(folder.path)
 
-    def test_properties(self) -> None:
-        folder: TaskFolder = SERVICE.get_folder("\\")
+    def test_name(self) -> None:
+        """Test for TaskFolder.name."""
+        name: str = ROOT.name
+        assert isinstance(name, str)
 
-        name: str = folder.name
-        self.assertIsInstance(name, str)
+    def test_path(self) -> None:
+        """Test for TaskFolder.path."""
+        path: str = ROOT.path
+        assert isinstance(path, str)
 
-        path: str = folder.path
-        self.assertIsInstance(path, str)
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_create_folder(self, absolute: bool) -> None:
+        """Test for TaskService.create_folder()."""
+        name: str = "TestCreateFolder"
 
-    def test_create_folder(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("TestCreate")
+        folder_path: str = f"\\{name}" if absolute else name
+        folder: TaskFolder = ROOT.create_folder(folder_path)
         try:
-            self.assertIsInstance(folder, TaskFolder)
-            self.assertEqual("TestCreate", folder.name)
-            self.assertEqual("\\TestCreate", folder.path)
+            assert isinstance(folder, TaskFolder)
+            assert folder.name == name
+            assert folder.path == f"\\{name}"
         finally:
-            ROOT.delete_folder("TestCreate")
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(folder_path)
 
-    def test_create_folder_nested(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("TestNested\\Folder")
-        try:
-            self.assertIsInstance(folder, TaskFolder)
-            self.assertEqual("Folder", folder.name)
-            self.assertEqual("\\TestNested\\Folder", folder.path)
-        finally:
-            ROOT.delete_folder("TestNested\\Folder")
-            ROOT.delete_folder("TestNested")
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_create_folder_nested(self, absolute: bool) -> None:
+        """Test for TaskService.create_folder() with a nested folder."""
+        parent_name: str = "TestCreateFolder"
+        name: str = "Folder"
 
-    def test_create_folder_absolute(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("\\TestCreateAbsolute")
+        folder_path: str = f"\\{parent_name}\\{name}" if absolute else f"{parent_name}\\{name}"
+        folder: TaskFolder = ROOT.create_folder(folder_path)
         try:
-            self.assertIsInstance(folder, TaskFolder)
-            self.assertEqual("TestCreateAbsolute", folder.name)
-            self.assertEqual("\\TestCreateAbsolute", folder.path)
+            assert isinstance(folder, TaskFolder)
+            assert folder.name == name
+            assert folder.path == f"\\{parent_name}\\{name}"
         finally:
-            ROOT.delete_folder("\\TestCreateAbsolute")
-
-    def test_create_folder_absolute_nested(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("\\TestAbsoluteNested\\Folder")
-        try:
-            self.assertIsInstance(folder, TaskFolder)
-            self.assertEqual("Folder", folder.name)
-            self.assertEqual("\\TestAbsoluteNested\\Folder", folder.path)
-        finally:
-            ROOT.delete_folder("\\TestAbsoluteNested\\Folder")
-            ROOT.delete_folder("\\TestAbsoluteNested")
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(folder_path)
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(parent_name)
 
     def test_create_folder_exists(self) -> None:
-        ROOT.create_folder("TestCreateExists")
+        """Test for TaskService.create_folder() with a folder that already exists."""
+        name: str = "TestCreateFolderExists"
+
+        with contextlib.suppress(TaskFolderExistsError):
+            ROOT.create_folder(name)
         try:
-            self.assertRaises(TaskFolderExists, ROOT.create_folder, "TestCreateExists")
+            with pytest.raises(TaskFolderExistsError):
+                ROOT.create_folder(name)
         finally:
-            ROOT.delete_folder("TestCreateExists")
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(name)
 
-    def test_create_folder_security_descriptor(self) -> None:  # TODO
-        pass
+    def test_create_folder_security_descriptor(self) -> None:
+        """Test for TaskService.create_folder() with a security descriptor."""
+        # TODO(Ryan): test_create_folder_security_descriptor
 
-    def test_delete_folder(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("TestDelete")
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_delete_folder(self, absolute: bool) -> None:
+        """Test for TaskService.delete_folder()."""
+        name: str = "TestDeleteFolder"
+
+        folder_path: str = f"\\{name}" if absolute else name
+        with contextlib.suppress(TaskFolderExistsError):
+            ROOT.create_folder(folder_path)
         try:
-            self.assertIsNotNone(SERVICE.get_folder(folder.path))
-            ROOT.delete_folder("TestDelete")
-            self.assertRaises(TaskFolderNotFound, SERVICE.get_folder, folder.path)
+            assert ROOT.get_folder(folder_path) is not None
+            ROOT.delete_folder(folder_path)
+            with pytest.raises(TaskFolderNotFoundError):
+                ROOT.get_folder(folder_path)
         finally:
-            try:
-                ROOT.delete_folder("TestDelete")
-            except TaskFolderNotFound:
-                pass
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(folder_path)
 
-    def test_delete_folder_nested(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("TestDeleteNested\\Folder")
+    @pytest.mark.parametrize("absolute", [False, True])
+    def test_delete_folder_nested(self, absolute: bool) -> None:
+        """Test for TaskService.delete_folder() with a nested folder."""
+        parent_name: str = "TestDeleteFolder"
+        name: str = "Folder"
+
+        folder_path: str = f"\\{parent_name}\\{name}" if absolute else f"{parent_name}\\{name}"
+        with contextlib.suppress(TaskFolderExistsError):
+            ROOT.create_folder(folder_path)
         try:
-            self.assertIsNotNone(SERVICE.get_folder(folder.path))
-            ROOT.delete_folder("TestDeleteNested\\Folder")
-            self.assertRaises(TaskFolderNotFound, SERVICE.get_folder, folder.path)
+            assert ROOT.get_folder(folder_path) is not None
+            ROOT.delete_folder(folder_path)
+            with pytest.raises(TaskFolderNotFoundError):
+                ROOT.get_folder(folder_path)
         finally:
-            try:
-                ROOT.delete_folder("TestDeleteNested\\Folder")
-            except TaskFolderNotFound:
-                pass
-            try:
-                ROOT.delete_folder("TestDeleteNested")
-            except TaskFolderNotFound:
-                pass
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(folder_path)
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(parent_name)
 
-    def test_delete_folder_absolute(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("\\TestDeleteAbsolute")
+    def test_delete_folder_not_exists(self) -> None:
+        """Test for TaskService.delete_folder() with a folder that does not exist exists."""
+        name: str = "TestDeleteFolderNotExists"
+
+        with contextlib.suppress(TaskFolderNotFoundError):
+            ROOT.delete_folder(name)
+
+    def test_delete_task(self) -> None:
+        """Test for TaskFolder.delete_task()."""
+        folder_name: str = "TestDeleteTask"
+        folder: TaskFolder
         try:
-            self.assertIsNotNone(SERVICE.get_folder(folder.path))
-            ROOT.delete_folder("\\TestDeleteAbsolute")
-            self.assertRaises(TaskFolderNotFound, SERVICE.get_folder, folder.path)
-        finally:
-            try:
-                ROOT.delete_folder("\\TestDeleteAbsolute")
-            except TaskFolderNotFound:
-                pass
+            folder = ROOT.create_folder(folder_name)
+        except TaskFolderExistsError:
+            folder = ROOT.get_folder(folder_name)
 
-    def test_delete_folder_absolute_nested(self) -> None:
-        folder: TaskFolder = ROOT.create_folder("\\TestDeleteAbsoluteNested\\Folder")
-        try:
-            self.assertIsNotNone(SERVICE.get_folder(folder.path))
-            ROOT.delete_folder("\\TestDeleteAbsoluteNested\\Folder")
-            self.assertRaises(TaskFolderNotFound, SERVICE.get_folder, folder.path)
-        finally:
-            try:
-                ROOT.delete_folder("\\TestDeleteAbsoluteNested\\Folder")
-            except TaskFolderNotFound:
-                pass
-            try:
-                ROOT.delete_folder("\\TestDeleteAbsoluteNested")
-            except TaskFolderNotFound:
-                pass
-
-    def test_delete_folder_not_found(self) -> None:
-        self.assertRaises(TaskFolderNotFound, ROOT.delete_folder, "\\Folder\\Does\\Not\\Exist")
-
-    def test_delete_task(self) -> None:  # TODO
-        folder: TaskFolder = ROOT.create_folder("TestDeleteTask")
-
-        # task_def: TaskDefinition = SERVICE.new_task()
-        # task_def.registration_info.description = "Test Task"
-        # task_def.settings.enabled = True
-        # task_def.settings.stop_if_going_on_batteries = False
-        #
-        # start_time = datetime.now() + timedelta(minutes=5)
-        # trigger: TimeTrigger = cast(TimeTrigger, task_def.triggers.create(TriggerType.TIME))
-        # trigger.start_boundary = start_time.isoformat()
-        #
-        # # Create action
-        # action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
-        # action.id = "DO NOTHING"
-        # action.path = "cmd.exe"
-        # action.arguments = '/c "exit"'
-
-        try:
-            # task: RegisteredTask = folder.register_task_definition(
-            #     "Test Task",  # Task name
-            #     task_def,
-            #     Creation.CREATE_OR_UPDATE,
-            #     "",  # No user
-            #     "",  # No password
-            #     LogonType.NONE
-            # )
-            #
-            # found: RegisteredTask = folder.get_task("Test Task")
-            # folder.delete_task("Test Task")
-            # self.assertRaises(TaskNotFound, folder.delete_task, "Test Task")
-            pass
-        finally:
-            ROOT.delete_folder("TestDeleteTask")
-
-    def test_get_folder(self) -> None:
-        test_folder: TaskFolder = ROOT.create_folder("TestGet")
-        folder: TaskFolder = test_folder.create_folder("Folder")
-        try:
-            found: TaskFolder = test_folder.get_folder("Folder")
-            self.assertIsInstance(folder, TaskFolder)
-            self.assertEqual(folder, found)
-
-        finally:
-            ROOT.delete_folder("TestGet\\Folder")
-            ROOT.delete_folder("TestGet")
-
-    def test_get_folder_not_found(self) -> None:
-        test_folder: TaskFolder = ROOT.create_folder("TestGetNotFound")
-        try:
-            self.assertRaises(TaskFolderNotFound, test_folder.get_folder, "Folder")
-        finally:
-            ROOT.delete_folder("TestGetNotFound")
-
-    def test_get_folders(self) -> None:
-        try:
-            folder: TaskFolder = ROOT.create_folder("TestGetMany")
-            for i in range(5):
-                folder.create_folder(f"Folder{i}")
-
-            found: TaskFolderCollection = folder.get_folders()
-            self.assertIsInstance(found, TaskFolderCollection)
-        finally:
-            for i in range(5):
-                try:
-                    ROOT.delete_folder(f"TestGetMany\\Folder{i}")
-                except TaskFolderNotFound:
-                    pass
-            try:
-                ROOT.delete_folder("TestGetMany")
-            except TaskFolderNotFound:
-                pass
-
-    def test_get_folders_none(self) -> None:
-        try:
-            folder: TaskFolder = ROOT.create_folder("TestGetManyNone")
-            found: TaskFolderCollection = folder.get_folders()
-            self.assertIsInstance(found, TaskFolderCollection)
-        finally:
-            try:
-                ROOT.delete_folder("TestGetManyNone")
-            except TaskFolderNotFound:
-                pass
-
-    def test_get_security_descriptor(self) -> None:  # TODO
-        pass
-
-    def test_get_task(self) -> None:  # TODO
-        pass
-
-    def test_get_tasks(self) -> None:  # TODO
-        pass
-
-    def test_register_task(self) -> None:  # TODO
-        pass
-
-    def test_register_task_definition(self) -> None:  # TODO
-        pass
-
-    def test_set_security_description(self) -> None:  # TODO
-        pass
-
-
-class TestTaskFolderCollection(unittest.TestCase):
-    folder: TaskFolder
-
-    @classmethod
-    def setUpClass(cls):
-        try:
-            cls.folder = ROOT.create_folder("TestFolderCollection")
-        except TaskFolderExists:
-            cls.folder = ROOT.get_folder("TestFolderCollection")
-
-        for i in range(5):
-            try:
-                cls.folder.create_folder(f"Folder{i}")
-            except TaskFolderExists:
-                pass
-
-    @classmethod
-    def tearDownClass(cls):
-        for i in range(5):
-            try:
-                cls.folder.delete_folder(f"Folder{i}")
-            except TaskFolderNotFound:
-                pass
-        try:
-            ROOT.delete_folder("TestFolderCollection")
-        except TaskFolderNotFound:
-            pass
-
-    def test_dunder_len(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertEqual(5, len(collection))
-
-    def test_dunder_getitem(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        folder: TaskFolder = collection[1]
-        self.assertIsInstance(folder, TaskFolder)
-        self.assertEqual("Folder0", folder.name)
-
-    def test_dunder_getitem_zero(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertRaises(IndexError, collection.__getitem__, 0)
-
-    def test_dunder_getitem_out_of_range(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertRaises(IndexError, collection.__getitem__, 6)
-
-    def test_dunder_iter(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        iterator: Iterator[TaskFolder] = iter(collection)
-        self.assertIsInstance(iterator, Iterator)
-
-        for member in collection:
-            self.assertIsInstance(member, TaskFolder)
-
-    def test_properties(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertEqual(5, collection.count)
-
-    def test_item(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        folder: TaskFolder = collection.item(1)
-        self.assertIsInstance(folder, TaskFolder)
-        self.assertEqual("Folder0", folder.name)
-
-    def test_item_zero(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertRaises(IndexError, collection.item, 0)
-
-    def test_item_out_of_range(self) -> None:
-        collection: TaskFolderCollection = self.folder.get_folders()
-
-        self.assertRaises(IndexError, collection.item, 6)
-
-
-class TestTaskDefinition(unittest.TestCase):
-    def test_actions(self) -> None:
+        # TODO(Ryan): Implement
         task_def: TaskDefinition = SERVICE.new_task()
-
-        value: ActionCollection = task_def.actions
-        self.assertIsInstance(value, ActionCollection)
-        self.assertIs(value, task_def.actions)
-
-    def test_data(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: str = task_def.data
-        self.assertIsInstance(value, str)
-
-    def test_principal(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: Principal = task_def.principal
-        self.assertIsInstance(value, Principal)
-        self.assertIs(value, task_def.principal)
-
-    def test_registration_info(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: RegistrationInfo = task_def.registration_info
-        self.assertIsInstance(value, RegistrationInfo)
-        self.assertIs(value, task_def.registration_info)
-
-    def test_settings(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: TaskSettings = task_def.settings
-        self.assertIsInstance(value, TaskSettings)
-        self.assertIs(value, task_def.settings)
-
-    def test_triggers(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: TriggerCollection = task_def.triggers
-        self.assertIsInstance(value, TriggerCollection)
-        self.assertIs(value, task_def.triggers)
-
-    def test_xml_text(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        value: str = task_def.xml_text
-        self.assertIsInstance(value, str)
-
-
-# class TestRunningTask(unittest.TestCase):  # TODO
-# class TestRunningTaskCollection(unittest.TestCase):  # TODO
-
-
-class TestRegisteredTask(unittest.TestCase):
-    task: RegisteredTask
-
-    @classmethod
-    def setUpClass(cls):
-        task_def: TaskDefinition = SERVICE.new_task()
-
-        task_def.registration_info.description = "TestRegisteredTask"
+        task_def.registration_info.description = "Test Task"
         task_def.settings.enabled = True
         task_def.settings.stop_if_going_on_batteries = False
 
-        trigger: TimeTrigger = cast(TimeTrigger, task_def.triggers.create(TriggerType.TIME))
+        start_time = datetime.now() + timedelta(minutes=5)
+        trigger: TimeTrigger = task_def.triggers.create(TimeTrigger)
+        trigger.start_boundary = start_time
+
+        # Create action
+        action: ExecAction = task_def.actions.create(ExecAction)
+        action.id = "DO NOTHING"
+        action.path = Path("cmd.exe")
+        action.arguments = '/c "exit"'
+
+        try:
+            task_name: str = "Test Task"
+
+            folder.register_task_definition(
+                task_name,
+                task_def,
+                Creation.CREATE_OR_UPDATE,
+                "",  # No user
+                "",  # No password
+                LogonType.NONE,
+            )
+
+            folder.get_task(task_name)
+            folder.delete_task(task_name)
+            with pytest.raises(TaskNotFoundError):
+                folder.delete_task(task_name)
+        finally:
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(folder_name)
+
+    def test_get_folder(self) -> None:
+        """Test for TaskFolder.get_folder()."""
+        name: str = "Folder"
+
+        with contextlib.suppress(TaskFolderExistsError):
+            folder: TaskFolder = ROOT.create_folder(name)
+        try:
+            found: TaskFolder = ROOT.get_folder(name)
+            assert isinstance(folder, TaskFolder)
+            assert folder == found
+        finally:
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(name)
+
+    def test_get_folder_not_exists(self) -> None:
+        """Test for TaskFolder.get_folder() with a folder that does not exist."""
+        name: str = "FolderNotExists"
+
+        with pytest.raises(TaskFolderNotFoundError):
+            ROOT.get_folder(name)
+
+    def test_get_folders(self) -> None:
+        """Test for TaskFolder.get_folders()."""
+        parent_name: str = "TestGetFolders"
+        name: str = "Folder{i}"
+
+        with contextlib.suppress(TaskFolderExistsError):
+            parent_folder: TaskFolder = ROOT.create_folder(parent_name)
+        try:
+            for i in range(5):
+                parent_folder.create_folder(name.format(i=i))
+
+            found: TaskFolderCollection = parent_folder.get_folders()
+            assert isinstance(found, TaskFolderCollection)
+        finally:
+            for i in range(5):
+                with contextlib.suppress(TaskFolderNotFoundError):
+                    parent_folder.delete_folder(name.format(i=i))
+            with contextlib.suppress(TaskFolderNotFoundError):
+                ROOT.delete_folder(parent_name)
+
+    def test_get_security_descriptor(self) -> None:
+        """Test for TaskFolder.get_security_descriptor()."""
+        # TODO(Ryan): test_get_security_descriptor
+
+    def test_get_task(self) -> None:
+        """Test for TaskFolder.get_task()."""
+        # TODO(Ryan): test_get_task
+
+    def test_get_tasks(self) -> None:
+        """Test for TaskFolder.get_tasks()."""
+        # TODO(Ryan): test_get_tasks
+
+    def test_register_task(self) -> None:
+        """Test for TaskFolder.register_task()."""
+        # TODO(Ryan): test_register_task
+
+    def test_register_task_definition(self) -> None:
+        """Test for TaskFolder.register_task_definition()."""
+        # TODO(Ryan): test_register_task_definition
+
+    def test_set_security_description(self) -> None:
+        """Test for TaskFolder.set_security_description()."""
+        # TODO(Ryan): test_set_security_description
+
+
+class TestTaskFolderCollection:
+    """Tests for TaskFolderCollection."""
+
+    parent_name: str = "TestFolderCollection"
+    name: str = "Folder{i}"
+    count: int = 5
+
+    @pytest.fixture(scope="class")
+    def collection(self) -> Generator[TaskFolderCollection, Any, None]:
+        """Collection fixture."""  # noqa: D401
+        parent_folder: TaskFolder
+        try:
+            parent_folder = ROOT.create_folder(self.parent_name)
+        except TaskFolderExistsError:
+            parent_folder = ROOT.get_folder(self.parent_name)
+
+        for i in range(self.count):
+            i += 1
+            with contextlib.suppress(TaskFolderExistsError):
+                parent_folder.create_folder(self.name.format(i=i))
+
+        yield parent_folder.get_folders()
+
+        for i in range(self.count):
+            i += 1
+            with contextlib.suppress(TaskFolderNotFoundError):
+                parent_folder.delete_folder(self.name.format(i=i))
+
+        with contextlib.suppress(TaskFolderNotFoundError):
+            ROOT.delete_folder(self.parent_name)
+
+    def test_dunder_len(self, collection: TaskFolderCollection) -> None:
+        """Test for TaskFolderCollection.__len__()."""
+        assert len(collection) == self.count
+
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_getitem(self, collection: TaskFolderCollection, index: int) -> None:
+        """Test for TaskFolderCollection.__getitem__()."""
+        folder: TaskFolder = collection[index]
+
+        assert isinstance(folder, TaskFolder)
+        assert folder.name == self.name.format(i=index)
+
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_getitem_out_of_range(
+        self, collection: TaskFolderCollection, index: int
+    ) -> None:
+        """Test for TaskFolderCollection.__getitem__()."""
+        with pytest.raises(IndexError):
+            collection.__getitem__(index)
+
+    def test_dunder_iter(self, collection: TaskFolderCollection) -> None:
+        """Test for TaskFolderCollection.__iter__()."""
+        iterator: Iterator[TaskFolder] = iter(collection)
+        assert isinstance(iterator, Iterator)
+
+        member: TaskFolder
+        for member in collection:
+            assert isinstance(member, TaskFolder)
+
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_contains(self, collection: TaskFolderCollection, index: int) -> None:
+        """Test for TaskFolderCollection.__contains__()."""
+        assert collection[index] in collection
+
+    def test_count(self, collection: TaskFolderCollection) -> None:
+        """Test for TaskFolderCollection.count."""
+        assert collection.count == self.count
+
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_item(self, collection: TaskFolderCollection, index: int) -> None:
+        """Test for TaskFolderCollection.item()."""
+        folder: TaskFolder = collection.item(index)
+
+        assert isinstance(folder, TaskFolder)
+        assert folder.name == self.name.format(i=index)
+
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_item_out_of_range(self, collection: TaskFolderCollection, index: int) -> None:
+        """Test for TaskFolderCollection.item()."""
+        with pytest.raises(IndexError):
+            collection.item(index)
+
+
+class TestTaskDefinition:
+    """Tests for TestTaskDefinition."""
+
+    @pytest.fixture
+    def definition(self) -> TaskDefinition:
+        """Definition fixture."""
+        return SERVICE.new_task()
+
+    def test_actions(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.actions."""
+        obj: ActionCollection = definition.actions
+
+        assert isinstance(obj, ActionCollection)
+
+    def test_data(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.data."""
+        obj: str = definition.data
+
+        assert isinstance(obj, str)
+
+    def test_principal(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.principal."""
+        obj: Principal = definition.principal
+
+        assert isinstance(obj, Principal)
+
+    def test_registration_info(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.registration_info."""
+        obj: RegistrationInfo = definition.registration_info
+
+        assert isinstance(obj, RegistrationInfo)
+
+    def test_settings(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.settings."""
+        obj: TaskSettings = definition.settings
+
+        assert isinstance(obj, TaskSettings)
+
+    def test_triggers(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.triggers."""
+        obj: TriggerCollection = definition.triggers
+
+        assert isinstance(obj, TriggerCollection)
+
+    def test_xml_text(self, definition: TaskDefinition) -> None:
+        """Test for TaskFolderCollection.xml_text."""
+        obj: str = definition.xml_text
+
+        assert isinstance(obj, str)
+
+
+class TestRunningTask:
+    """Tests for RunningTask."""
+
+    # TODO(Ryan): TestRunningTask
+
+
+class TestRunningTaskCollection:
+    """Tests for RunningTaskCollection."""
+
+    # TODO(Ryan): TestRunningTaskCollection
+
+
+class TestRegisteredTask:
+    """Tests for RegisteredTask."""
+
+    task_name: str = "TestRegisteredTask"
+
+    @pytest.fixture(scope="class")
+    def definition(self) -> TaskDefinition:
+        """Definition fixture."""
+        definition: TaskDefinition = SERVICE.new_task()
+
+        definition.registration_info.description = "Description"
+        definition.principal.id = "Author"
+        definition.settings.enabled = True
+        definition.settings.stop_if_going_on_batteries = False
+
+        trigger: TimeTrigger = definition.triggers.create(TimeTrigger)
         trigger.start_boundary = datetime.now() + timedelta(hours=1)
 
-        action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
+        action: ExecAction = definition.actions.create(ExecAction)
         action.id = "DO NOTHING"
-        action.path = "cmd.exe"
+        action.path = Path("cmd.exe")
         action.arguments = '/c "exit"'
-        # action.arguments = '/c "timeout /t 30 > nul"'
 
-        cls.task = ROOT.register_task_definition(
-            "TestRegisteredTask",
-            task_def,
+        return definition
+
+    @pytest.fixture(scope="class")
+    def task(self, definition: TaskDefinition) -> Generator[RegisteredTask]:
+        """Task fixture."""
+        yield ROOT.register_task_definition(
+            self.task_name,
+            definition,
             Creation.CREATE_OR_UPDATE,
             "",
             "",
             LogonType.NONE,
         )
 
-    @classmethod
-    def tearDownClass(cls):
-        try:
-            ROOT.delete_task("TestRegisteredTask")
-        except TaskNotFound:
-            pass
+        with contextlib.suppress(TaskNotFoundError):
+            ROOT.delete_task(self.task_name)
 
-    def test_definition(self) -> None:
-        value: TaskDefinition = self.task.definition
-        self.assertIsInstance(value, TaskDefinition)
-        self.assertIs(value, self.task.definition)
+    def test_definition(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.definition."""
+        obj: TaskDefinition = task.definition
 
-    def test_enabled(self) -> None:
-        expected: bool = True
-        self.task.enabled = expected
+        assert isinstance(obj, TaskDefinition)
 
-        value: bool = self.task.enabled
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+    def test_enabled(self, definition: TaskDefinition, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.enabled."""
+        obj: bool = task.enabled
 
-    def test_last_run_time(self) -> None:
-        value: datetime = self.task.last_run_time
-        self.assertIsInstance(value, datetime)
+        assert isinstance(obj, bool)
+        assert obj == definition.settings.enabled
 
-    def test_last_task_result(self) -> None:
-        value: int = self.task.last_task_result
-        self.assertIsInstance(value, int)
+    def test_last_run_time(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.last_run_time."""
+        obj: datetime = task.last_run_time
 
-    def test_name(self) -> None:
-        value: str = self.task.name
-        self.assertIsInstance(value, str)
+        assert isinstance(obj, datetime)
 
-    def test_next_run_time(self) -> None:
-        value: datetime = self.task.next_run_time
-        self.assertIsInstance(value, datetime)
+    def test_last_task_result(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.last_task_result."""
+        obj: int = task.last_task_result
 
-    def test_number_of_missed_runs(self) -> None:
-        value: int = self.task.number_of_missed_runs
-        self.assertIsInstance(value, int)
+        assert isinstance(obj, int)
 
-    def test_path(self) -> None:
-        value: str = self.task.path
-        self.assertIsInstance(value, str)
+    def test_name(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.name."""
+        obj: str = task.name
 
-    def test_state(self) -> None:
-        value: State = self.task.state
-        self.assertIsInstance(value, State)
+        assert isinstance(obj, str)
+        assert obj == self.task_name
 
-    def test_xml(self) -> None:
-        value: str = self.task.xml
-        self.assertIsInstance(value, str)
+    def test_next_run_time(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.next_run_time."""
+        obj: datetime = task.next_run_time
 
-    def test_get_instances(self) -> None:
-        value: RunningTaskCollection = self.task.get_instances()
-        self.assertIsInstance(value, RunningTaskCollection)
+        assert isinstance(obj, datetime)
 
-    # def test_get_run_times(self) -> None:  # TODO
-    #     start: datetime = datetime.now()
-    #     end: datetime = start + relativedelta(years=1)
-    #
-    #     value: RunningTaskCollection = self.task.get_run_times(start, end)
-    #     self.assertIsInstance(value, RunningTaskCollection)
+    def test_number_of_missed_runs(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.number_of_missed_runs."""
+        obj: int = task.number_of_missed_runs
 
-    def test_get_security_descriptor(self) -> None:
-        value: str = self.task.get_security_descriptor(
+        assert isinstance(obj, int)
+
+    def test_path(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.path."""
+        obj: str = task.path
+
+        assert isinstance(obj, str)
+
+    def test_state(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.state."""
+        obj: State = task.state
+
+        assert isinstance(obj, State)
+
+    def test_xml(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.xml."""
+        obj: str = task.xml
+
+        assert isinstance(obj, str)
+
+    def test_get_instances(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.get_instances()."""
+        obj: RunningTaskCollection = task.get_instances()
+
+        assert isinstance(obj, RunningTaskCollection)
+
+    def test_get_run_times(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.get_run_times()."""
+        start: datetime = datetime.now()
+        end: datetime = start + relativedelta(years=1)
+
+        obj: RunningTaskCollection = task.get_run_times(start, end)
+
+        assert isinstance(obj, RunningTaskCollection)
+
+    def test_get_security_descriptor(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.get_security_descriptor()."""
+        obj: str = task.get_security_descriptor(
             SecurityInformation.OWNER
             | SecurityInformation.GROUP
             | SecurityInformation.DACL
             | SecurityInformation.SACL
             | SecurityInformation.LABEL
         )
-        self.assertIsInstance(value, str)
 
-    def test_run(self) -> None:
-        value: RunningTask = self.task.run(None)
-        self.assertIsInstance(value, RunningTask)
+        assert isinstance(obj, str)
 
-    # def test_run_ex(self) -> None:  # TODO
-    #     value: Optional[RunningTask] = None
-    #     try:
-    #         value: RunningTask = self.task.run_ex(None, RunFlags.NO_FLAGS, 0)
-    #         self.assertIsInstance(value, RunningTask)
-    #     finally:
-    #         if value is not None:
-    #             value.stop()
+    def test_run(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.run()."""
+        obj: RunningTask = task.run(None)
 
-    # def test_set_security_descriptor(self) -> None:  # TODO
-    #     security_descriptor: str = self.task.get_security_descriptor(
-    #         SecurityInformation.OWNER
-    #         | SecurityInformation.GROUP
-    #         | SecurityInformation.DACL
-    #         | SecurityInformation.SACL
-    #         | SecurityInformation.LABEL
-    #     )
-    #     flags: Creation = Creation.CREATE_OR_UPDATE
-    #     self.task.set_security_descriptor(security_descriptor, flags)
+        assert isinstance(obj, RunningTask)
 
-    # def test_stop(self) -> None:  # TODO
-    #     value: RunningTask = self.task.run(None)
-    #     while value.state != State.READY:
-    #         value.stop()
+    def test_run_ex(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.run_ex()."""
+        obj: RunningTask = task.run_ex(None, RunFlags.NO_FLAGS, 0)
+
+        assert isinstance(obj, RunningTask)
+
+    def test_set_security_descriptor(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.set_security_descriptor()."""
+        security_descriptor: str = task.get_security_descriptor(
+            SecurityInformation.OWNER
+            | SecurityInformation.GROUP
+            | SecurityInformation.DACL
+            | SecurityInformation.SACL
+            | SecurityInformation.LABEL
+        )
+        flags: Creation = Creation.CREATE_OR_UPDATE
+        task.set_security_descriptor(security_descriptor, flags)
+
+    def test_stop(self, task: RegisteredTask) -> None:
+        """Test for RegisteredTask.stop()."""
+        task.run(None)
+        task.stop()
 
 
-class TestRegisteredTaskCollection(unittest.TestCase):
-    folder: TaskFolder
+class TestRegisteredTaskCollection:
+    """Tests for RegisteredTaskCollection."""
 
-    @classmethod
-    def setUpClass(cls):
+    parent_name: str = "TestRegisteredTaskCollection"
+    name: str = "Task{i}"
+    count: int = 5
+
+    @pytest.fixture(scope="class")
+    def collection(self) -> Generator[RegisteredTaskCollection, Any, None]:
+        """Collection fixture."""  # noqa: D401
+        parent_folder: TaskFolder
         try:
-            cls.folder = ROOT.create_folder("TestRegisteredTaskCollection")
-        except TaskFolderExists:
-            cls.folder = ROOT.get_folder("TestRegisteredTaskCollection")
+            parent_folder = ROOT.create_folder(self.parent_name)
+        except TaskFolderExistsError:
+            parent_folder = ROOT.get_folder(self.parent_name)
 
-        for i in range(5):
-            task_def: TaskDefinition = SERVICE.new_task()
+        definition: TaskDefinition = SERVICE.new_task()
 
-            task_def.registration_info.description = f"Test Task {i}"
-            task_def.settings.enabled = True
-            task_def.settings.stop_if_going_on_batteries = False
+        definition.registration_info.description = "Description"
+        definition.settings.enabled = True
+        definition.settings.stop_if_going_on_batteries = False
 
-            trigger: TimeTrigger = cast(TimeTrigger, task_def.triggers.create(TriggerType.TIME))
-            trigger.start_boundary = datetime.now() + timedelta(minutes=5)
+        trigger: TimeTrigger = definition.triggers.create(TimeTrigger)
+        trigger.start_boundary = datetime.now() + timedelta(minutes=5)
 
-            action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
-            action.id = "DO NOTHING"
-            action.path = "cmd.exe"
-            action.arguments = '/c "exit"'
+        action: ExecAction = definition.actions.create(ExecAction)
+        action.id = "DO NOTHING"
+        action.path = Path("cmd.exe")
+        action.arguments = '/c "exit"'
 
-            cls.folder.register_task_definition(
-                f"Test Task {i}",
-                task_def,
-                Creation.CREATE_OR_UPDATE,
-                "",
-                "",
-                LogonType.NONE,
-            )
+        for i in range(self.count):
+            i += 1
+            with contextlib.suppress(TaskFolderExistsError):
+                parent_folder.register_task_definition(
+                    self.name.format(i=i),
+                    definition,
+                    Creation.CREATE_OR_UPDATE,
+                    "",
+                    "",
+                    LogonType.NONE,
+                )
 
-    @classmethod
-    def tearDownClass(cls):
-        for i in range(5):
-            try:
-                cls.folder.delete_task(f"Test Task {i}")
-            except TaskNotFound:
-                pass
-        try:
-            ROOT.delete_folder("TestRegisteredTaskCollection")
-        except TaskFolderNotFound:
-            pass
+        yield parent_folder.get_tasks()
 
-    def test_dunder_len(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
+        for i in range(self.count):
+            i += 1
+            with contextlib.suppress(TaskFolderNotFoundError):
+                parent_folder.delete_task(self.name.format(i=i))
 
-        self.assertEqual(5, len(collection))
+        with contextlib.suppress(TaskFolderNotFoundError):
+            ROOT.delete_folder(self.parent_name)
 
-    def test_dunder_getitem(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
+    def test_dunder_len(self, collection: RegisteredTaskCollection) -> None:
+        """Test for RegisteredTaskCollection.__len__()."""
+        assert len(collection) == self.count
 
-        task: RegisteredTask = collection[1]
-        self.assertIsInstance(task, RegisteredTask)
-        self.assertEqual("Test Task 0", task.name)
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_getitem(self, collection: RegisteredTaskCollection, index: int) -> None:
+        """Test for RegisteredTaskCollection.__getitem__()."""
+        task: RegisteredTask = collection[index]
 
-    def test_dunder_getitem_zero(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
+        assert isinstance(task, RegisteredTask)
+        assert task.name == self.name.format(i=index)
 
-        self.assertRaises(IndexError, collection.__getitem__, 0)
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_getitem_out_of_range(
+        self, collection: RegisteredTaskCollection, index: int
+    ) -> None:
+        """Test for RegisteredTaskCollection.__getitem__()."""
+        with pytest.raises(IndexError):
+            collection.__getitem__(index)
 
-    def test_dunder_getitem_out_of_range(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
-
-        self.assertRaises(IndexError, collection.__getitem__, 6)
-
-    def test_dunder_iter(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
-
+    def test_dunder_iter(self, collection: RegisteredTaskCollection) -> None:
+        """Test for RegisteredTaskCollection.__iter__()."""
         iterator: Iterator[RegisteredTask] = iter(collection)
-        self.assertIsInstance(iterator, Iterator)
+        assert isinstance(iterator, Iterator)
 
         for member in collection:
-            self.assertIsInstance(member, RegisteredTask)
+            assert isinstance(member, RegisteredTask)
 
-    def test_count(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_contains(self, collection: RegisteredTaskCollection, index: int) -> None:
+        """Test for RegisteredTaskCollection.__contains__()."""
+        assert collection[index] in collection
 
-        self.assertEqual(5, collection.count)
+    def test_count(self, collection: RegisteredTaskCollection) -> None:
+        """Test for RegisteredTaskCollection.count."""
+        assert collection.count == self.count
 
-    def test_item(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_item(self, collection: RegisteredTaskCollection, index: int) -> None:
+        """Test for RegisteredTaskCollection.item()."""
+        task: RegisteredTask = collection.item(index)
 
-        task: RegisteredTask = collection.item(1)
-        self.assertIsInstance(task, RegisteredTask)
-        self.assertEqual("Test Task 0", task.name)
+        assert isinstance(task, RegisteredTask)
+        assert task.name == self.name.format(i=index)
 
-    def test_item_zero(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
-
-        self.assertRaises(IndexError, collection.item, 0)
-
-    def test_item_out_of_range(self) -> None:
-        collection: RegisteredTaskCollection = self.folder.get_tasks()
-
-        self.assertRaises(IndexError, collection.item, 6)
-
-
-# TaskVariables  # TODO
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_item_out_of_range(self, collection: RegisteredTaskCollection, index: int) -> None:
+        """Test for RegisteredTaskCollection.item()."""
+        with pytest.raises(IndexError):
+            collection.item(index)
 
 
-class TestRegistrationInfo(unittest.TestCase):
-    def test_author(self) -> None:
+class TestTaskVariables:
+    """Tests for TaskVariables."""
+
+    # TODO(Ryan): TestTaskVariables
+
+
+# noinspection PyCompatibility
+class TestRegistrationInfo:
+    """Tests for RegistrationInfo."""
+
+    @pytest.fixture
+    def info(self) -> RegistrationInfo:
+        """Info fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
+        return task_def.registration_info
 
-        expected: str = "Author"
-        registration_info.author = expected
+    @pytest.mark.parametrize("expected", ["Author"])
+    def test_author(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.author."""
+        info.author = expected
 
-        value: str = registration_info.author
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = info.author
 
-    def test_date(self) -> None:
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", [None, datetime.now()])
+    def test_date(self, info: RegistrationInfo, expected: datetime | None) -> None:
+        """Test for RegistrationInfo.date."""
+        info.date = expected
+
+        obj: datetime | None = info.date
+
+        assert isinstance(obj, datetime | None)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", ["Description"])
+    def test_description(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.description."""
+        info.description = expected
+
+        obj: str = info.description
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", ["Documentation"])
+    def test_documentation(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.documentation."""
+        info.documentation = expected
+
+        obj: str = info.documentation
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", [None, "Security Descriptor"])
+    def test_security_descriptor(self, info: RegistrationInfo, expected: str | None) -> None:
+        """Test for RegistrationInfo.security_descriptor."""
+        info.security_descriptor = expected
+
+        obj: str | None = info.security_descriptor
+
+        assert isinstance(obj, str | None)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", ["Source"])
+    def test_source(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.source."""
+        info.source = expected
+
+        obj: str = info.source
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", ["URI"])
+    def test_uri(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.uri."""
+        info.uri = expected
+
+        obj: str = info.uri
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", ["Version"])
+    def test_version(self, info: RegistrationInfo, expected: str) -> None:
+        """Test for RegistrationInfo.version."""
+        info.version = expected
+
+        obj: str = info.version
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    def test_xml_text(self, info: RegistrationInfo) -> None:
+        """Test for RegistrationInfo.xml_text."""
+        obj: str = info.xml_text
+
+        assert isinstance(obj, str)
+
+
+class TestRepetitionPattern:
+    """Tests for RepetitionPattern."""
+
+    @pytest.fixture
+    def pattern(self) -> RepetitionPattern:
+        """Pattern fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
+        trigger: Trigger = task_def.triggers.create(EventTrigger)
+        return trigger.repetition
 
-        expected: Optional[datetime] = datetime.now()
-        registration_info.date = expected
-
-        value: Optional[datetime] = registration_info.date
-        self.assertIsInstance(value, Optional[datetime])
-        self.assertEqual(expected, value)
-
-    def test_date_none(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: Optional[datetime] = None
-        registration_info.date = expected
-
-        value: Optional[datetime] = registration_info.date
-        self.assertIsInstance(value, Optional[datetime])
-        self.assertEqual(expected, value)
-
-    def test_description(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: str = "Description"
-        registration_info.description = expected
-
-        value: str = registration_info.description
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-    def test_documentation(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: str = "Documentation"
-        registration_info.documentation = expected
-
-        value: str = registration_info.documentation
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-    def test_security_descriptor(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: Optional[str] = "Security Descriptor"
-        registration_info.security_descriptor = expected
-
-        value: Optional[str] = registration_info.security_descriptor
-        self.assertIsInstance(value, Optional[str])
-        self.assertEqual(expected, value)
-
-    def test_security_descriptor_none(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: Optional[str] = None
-        registration_info.security_descriptor = expected
-
-        value: Optional[str] = registration_info.security_descriptor
-        self.assertIsInstance(value, Optional[str])
-        self.assertEqual(expected, value)
-
-    def test_source(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: str = "Source"
-        registration_info.source = expected
-
-        value: str = registration_info.source
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-    def test_uri(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: str = "URI"
-        registration_info.uri = expected
-
-        value: str = registration_info.uri
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-    def test_version(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        expected: str = "Version"
-        registration_info.version = expected
-
-        value: str = registration_info.version
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-    def test_xml_text(self) -> None:  # TODO
-        task_def: TaskDefinition = SERVICE.new_task()
-        registration_info: RegistrationInfo = task_def.registration_info
-
-        registration_info.author = "Author"
-        registration_info.date = datetime.now()
-        registration_info.description = "Description"
-        registration_info.documentation = "Documentation"
-        registration_info.security_descriptor = "Security Descriptor"
-        registration_info.source = "Source"
-        registration_info.uri = "Uri"
-        registration_info.version = "Version"
-
-        # value: str = registration_info.xml_text
-        # pywintypes.com_error: (-2147352567, 'Exception occurred.', (0, None, None, None, 0, -2147467263), None)
-        # self.assertIsInstance(value, str)
-
-
-class TestRepetitionPattern(unittest.TestCase):
-    def test_duration(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
-        pattern: RepetitionPattern = trigger.repetition
-
-        expected: relativedelta = relativedelta(seconds=30)
+    @pytest.mark.parametrize("expected", [relativedelta(seconds=30)])
+    def test_duration(self, pattern: RepetitionPattern, expected: relativedelta) -> None:
+        """Test for RepetitionPattern.duration."""
         pattern.duration = expected
 
-        value: relativedelta = pattern.duration
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = pattern.duration
 
-    def test_interval(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
-        pattern: RepetitionPattern = trigger.repetition
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: relativedelta = relativedelta(seconds=30)
+    @pytest.mark.parametrize("expected", [relativedelta(seconds=30)])
+    def test_interval(self, pattern: RepetitionPattern, expected: relativedelta) -> None:
+        """Test for RepetitionPattern.interval."""
         pattern.interval = expected
 
-        value: relativedelta = pattern.interval
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = pattern.interval
 
-    def test_stop_at_duration_end(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
-        pattern: RepetitionPattern = trigger.repetition
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: bool = False
+    @pytest.mark.parametrize("expected", [True, False])
+    def test_stop_at_duration_end(self, pattern: RepetitionPattern, expected: bool) -> None:
+        """Test for RepetitionPattern.stop_at_duration_end."""
         pattern.stop_at_duration_end = expected
 
-        value: bool = pattern.stop_at_duration_end
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = pattern.stop_at_duration_end
+
+        assert isinstance(obj, bool)
+        assert obj == expected
 
 
-class TestPrincipal(unittest.TestCase):
-    def test_display_name(self) -> None:
+class TestPrincipal:
+    """Tests for Principal."""
+
+    @pytest.fixture
+    def principal(self) -> Principal:
+        """Principal fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        return task_def.principal
 
-        expected: str = "Display Name"
+    @pytest.mark.parametrize("expected", ["Display Name"])
+    def test_display_name(self, principal: Principal, expected: str) -> None:
+        """Test for Principal.display_name."""
         principal.display_name = expected
 
-        value: str = principal.display_name
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = principal.display_name
 
-    def test_group_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Group ID"
+    @pytest.mark.parametrize("expected", ["Group ID"])
+    def test_group_id(self, principal: Principal, expected: str) -> None:
+        """Test for Principal.group_id."""
         principal.group_id = expected
 
-        value: str = principal.group_id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = principal.group_id
 
-    def test_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "ID"
+    @pytest.mark.parametrize("expected", ["ID"])
+    def test_id(self, principal: Principal, expected: str) -> None:
+        """Test for Principal.id."""
         principal.id = expected
 
-        value: str = principal.id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = principal.id
 
-    def test_logon_type(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: LogonType = LogonType.INTERACTIVE_TOKEN_OR_PASSWORD
+    @pytest.mark.parametrize("expected", list(LogonType)[1:])
+    def test_logon_type(self, principal: Principal, expected: LogonType) -> None:
+        """Test for Principal.logon_type."""
         principal.logon_type = expected
 
-        value: LogonType = principal.logon_type
-        self.assertIsInstance(value, LogonType)
-        self.assertEqual(expected, value)
+        obj: LogonType = principal.logon_type
 
-    def test_run_level(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        assert isinstance(obj, LogonType)
+        assert obj == expected
 
-        expected: RunLevel = RunLevel.HIGHEST
+    @pytest.mark.parametrize("expected", list(RunLevel))
+    def test_run_level(self, principal: Principal, expected: RunLevel) -> None:
+        """Test for Principal.run_level."""
         principal.run_level = expected
 
-        value: RunLevel = principal.run_level
-        self.assertIsInstance(value, RunLevel)
-        self.assertEqual(expected, value)
+        obj: RunLevel = principal.run_level
 
-    def test_user_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        principal: Principal = task_def.principal
+        assert isinstance(obj, RunLevel)
+        assert obj == expected
 
-        expected: str = "User ID"
+    @pytest.mark.parametrize("expected", ["User ID"])
+    def test_user_id(self, principal: Principal, expected: str) -> None:
+        """Test for Principal.user_id."""
         principal.user_id = expected
 
-        value: str = principal.user_id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = principal.user_id
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestTaskNamedValuePair(unittest.TestCase):
-    def test_dunder_len(self) -> None:
+class TestTaskNamedValuePair:
+    """Tests for TaskNamedValuePair."""
+
+    @pytest.fixture
+    def pair(self) -> TaskNamedValuePair:
+        """Pair fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
+        trigger: EventTrigger = task_def.triggers.create(EventTrigger)
+        return trigger.value_queries.create("Name", "Value")
 
-        self.assertEqual(2, len(pair))
+    def test_dunder_len(self, pair: TaskNamedValuePair) -> None:
+        """Test for TaskNamedValuePair.__len__()."""
+        assert len(pair) == 2
 
-    def test_dunder_getitem(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
+    def test_dunder_getitem(self, pair: TaskNamedValuePair) -> None:
+        """Test for TaskNamedValuePair.__getitem__()."""
+        assert pair[0] == "Name"
+        assert pair[1] == "Value"
 
-        name: str = pair[0]
-        self.assertEqual("Name1", name)
+    @pytest.mark.parametrize("index", [-1, 2])
+    def test_dunder_getitem_out_of_range(self, pair: TaskNamedValuePair, index: int) -> None:
+        """Test for TaskNamedValuePair.__getitem__()."""
+        with pytest.raises(IndexError):
+            pair.__getitem__(index)
 
-        value: str = pair[1]
-        self.assertEqual("Value1", value)
-
-    def test_dunder_getitem_negative(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
-
-        self.assertRaises(IndexError, pair.__getitem__, -1)
-
-    def test_dunder_getitem_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
-
-        self.assertRaises(IndexError, pair.__getitem__, 2)
-
-    def test_dunder_iter(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
-
+    def test_dunder_iter(self, pair: TaskNamedValuePair) -> None:
+        """Test for TaskNamedValuePair.__iter__()."""
         iterator: Iterator[str] = iter(pair)
-        self.assertIsInstance(iterator, Iterator)
+        assert isinstance(iterator, Iterator)
 
-        for value in pair:
-            self.assertIsInstance(value, str)
+        for obj in pair:
+            assert isinstance(obj, str)
 
-    def test_tuple(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
+    @pytest.mark.parametrize("value", ["Name", "Value"])
+    def test_dunder_contains(self, pair: TaskNamedValuePair, value: str) -> None:
+        """Test for TaskNamedValuePair.__contains__()."""
+        assert value in pair
 
-        value: Tuple = tuple(pair)
-        self.assertEqual(("Name1", "Value1"), value)
-
-    def test_name(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
-
-        expected: str = "Name"
+    @pytest.mark.parametrize("expected", [f"Name{i}" for i in range(5)])
+    def test_name(self, pair: TaskNamedValuePair, expected: str) -> None:
+        """Test for TaskNamedValuePair.name."""
         pair.name = expected
 
-        value: str = pair.name
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = pair.name
 
-    def test_value(self) -> None:
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    @pytest.mark.parametrize("expected", [f"Value{i}" for i in range(5)])
+    def test_value(self, pair: TaskNamedValuePair, expected: str) -> None:
+        """Test for TaskNamedValuePair.obj."""
+        pair.obj = expected
+
+        obj: str = pair.obj
+
+        assert isinstance(obj, str)
+        assert obj == expected
+
+
+class TestTaskNamedValueCollection:
+    """Tests for TaskNamedValueCollection."""
+
+    name: str = "Name{i}"
+    value: str = "Value{i}"
+    count: int = 5
+
+    @pytest.fixture
+    def collection(self) -> TaskNamedValueCollection:
+        """Collection fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        pair: TaskNamedValuePair = trigger.value_queries.create("Name1", "Value1")
-
-        expected: str = "Value"
-        pair.value = expected
-
-        value: str = pair.value
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
-
-
-class TestTaskNamedValueCollection(unittest.TestCase):
-    def test_dunder_len(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
+        trigger: EventTrigger = task_def.triggers.create(EventTrigger)
         collection: TaskNamedValueCollection = trigger.value_queries
 
-        self.assertEqual(0, len(collection))
+        for i in range(self.count):
+            i += 1
+            collection.create(self.name.format(i=i), self.value.format(i=i))
 
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
+        return collection
 
-        self.assertEqual(3, len(collection))
+    def test_dunder_len(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.__len__()."""
+        assert len(collection) == self.count
 
-    def test_dunder_getitem(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_getitem(self, collection: TaskNamedValueCollection, index: int) -> None:
+        """Test for TaskNamedValueCollection.__getitem__()."""
+        pair: TaskNamedValuePair = collection[index]
 
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
+        assert isinstance(pair, TaskNamedValuePair)
+        assert pair.name == self.name.format(i=index)
+        assert pair.value == self.value.format(i=index)
 
-        pair: TaskNamedValuePair = collection[1]
-        self.assertIsInstance(pair, TaskNamedValuePair)
-        self.assertEqual("Name1", pair.name)
-        self.assertEqual("Value1", pair.value)
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_getitem_out_of_range(
+        self, collection: TaskNamedValueCollection, index: int
+    ) -> None:
+        """Test for TaskNamedValueCollection.__getitem__()."""
+        with pytest.raises(IndexError):
+            collection.__getitem__(index)
 
-    def test_dunder_getitem_zero(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        self.assertRaises(IndexError, collection.__getitem__, 0)
-
-    def test_dunder_getitem_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        self.assertRaises(IndexError, collection.__getitem__, 4)
-
-    def test_dunder_iter(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
+    def test_dunder_iter(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.__iter__()."""
         iterator: Iterator[TaskNamedValuePair] = iter(collection)
-        self.assertIsInstance(iterator, Iterator)
+        assert isinstance(iterator, Iterator)
 
         for member in collection:
-            self.assertIsInstance(member, TaskNamedValuePair)
+            assert isinstance(member, TaskNamedValuePair)
 
-    def test_count(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_contains(self, collection: TaskNamedValueCollection, index: int) -> None:
+        """Test for TaskNamedValueCollection.__contains__()."""
+        assert collection[index] in collection
 
-        self.assertEqual(0, collection.count)
+    def test_count(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.count."""
+        assert collection.count == self.count
 
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_item(self, collection: TaskNamedValueCollection, index: int) -> None:
+        """Test for TaskNamedValueCollection.item()."""
+        pair: TaskNamedValuePair = collection.item(index)
 
-        self.assertEqual(3, collection.count)
+        assert isinstance(pair, TaskNamedValuePair)
+        assert pair.name == self.name.format(i=index)
+        assert pair.value == self.value.format(i=index)
 
-    def test_item(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_item_out_of_range(self, collection: TaskNamedValueCollection, index: int) -> None:
+        """Test for TaskNamedValueCollection.item()."""
+        with pytest.raises(IndexError):
+            collection.item(index)
 
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        pair: TaskNamedValuePair = collection.item(1)
-        self.assertIsInstance(pair, TaskNamedValuePair)
-        self.assertEqual("Name1", pair.name)
-        self.assertEqual("Value1", pair.value)
-
-    def test_item_zero(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        self.assertRaises(IndexError, collection.item, 0)
-
-    def test_item_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        self.assertRaises(IndexError, collection.item, 4)
-
-    def test_clear(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        self.assertEqual(3, collection.count)
+    def test_clear(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.clear()."""
+        assert collection.count == self.count
 
         collection.clear()
-        self.assertEqual(0, collection.count)
 
-    def test_create(self) -> None:
+        assert collection.count == 0
+
+    def test_create(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.create()."""
+        assert collection.count == self.count
+
+        pair: TaskNamedValuePair = collection.create(self.name.format(i=6), self.value.format(i=6))
+
+        assert isinstance(pair, TaskNamedValuePair)
+        assert collection.count == self.count + 1
+
+    def test_remove(self, collection: TaskNamedValueCollection) -> None:
+        """Test for TaskNamedValueCollection.remove()."""
+        assert collection.count == self.count
+
+        collection.remove(self.count)
+
+        assert collection.count == self.count - 1
+
+
+class TestAction:
+    """Tests for Action."""
+
+    @pytest.fixture
+    def action(self) -> Action:
+        """Action fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
+        return task_def.actions.create(ExecAction)
 
-        self.assertEqual(0, collection.count)
-
-        pair: TaskNamedValuePair = collection.create("Name1", "Value1")
-        self.assertIsInstance(pair, TaskNamedValuePair)
-        self.assertEqual(1, collection.count)
-
-    def test_remove(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-        collection: TaskNamedValueCollection = trigger.value_queries
-
-        collection.create("Name1", "Value1")
-        collection.create("Name2", "Value2")
-        collection.create("Name3", "Value3")
-
-        collection.remove(2)
-        self.assertEqual(2, collection.count)
-        self.assertIsInstance(collection[2], TaskNamedValuePair)
-
-
-class TestAction(unittest.TestCase):
-    def test_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: Action = task_def.actions.create(ActionType.EXEC)
-
+    def test_id(self, action: Action) -> None:
+        """Test for Action.id."""
         expected: str = "ID"
         action.id = expected
 
-        value: str = action.id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.id
+        assert isinstance(obj, str)
+        assert obj == expected
 
-    def test_type(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: Action = task_def.actions.create(ActionType.EXEC)
+    def test_type(self, action: Action) -> None:
+        """Test for Action.type."""
+        obj: int = action.type
 
-        expected: ActionType = ActionType.EXEC
-
-        value: ActionType = action.type
-        self.assertIsInstance(value, ActionType)
-        self.assertEqual(expected, value)
+        assert isinstance(obj, int)
+        assert obj == ExecAction.type_value
 
 
-class TestActionCollection(unittest.TestCase):
-    def test_dunder_len(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+class TestActionCollection:
+    """Tests for ActionCollection."""
 
-        self.assertEqual(0, len(collection))
+    values: Sequence[type[Action]] = [ExecAction, ComHandlerAction, EmailAction, ShowMessageAction]
+    count: int = len(values)
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertEqual(3, len(collection))
-
-    def test_dunder_getitem(self) -> None:
+    @pytest.fixture
+    def collection(self) -> ActionCollection:
+        """Collection fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
         collection: ActionCollection = task_def.actions
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
+        action: type[Action]
+        for action in self.values:
+            collection.create(action)
 
-        action: Action = collection[1]
-        self.assertIsInstance(action, Action)
-        self.assertEqual(ActionType.EXEC, action.type)
+        return collection
 
-    def test_dunder_getitem_zero(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+    def test_dunder_len(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.__len__()."""
+        assert len(collection) == self.count
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_getitem(self, collection: ActionCollection, index: int) -> None:
+        """Test for ActionCollection.__getitem__()."""
+        action: Action = collection[index]
 
-        self.assertRaises(IndexError, collection.__getitem__, 0)
+        assert isinstance(action, self.values[index - 1])
 
-    def test_dunder_getitem_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_getitem_out_of_range(self, collection: ActionCollection, index: int) -> None:
+        """Test for ActionCollection.__getitem__()."""
+        with pytest.raises(IndexError):
+            collection.__getitem__(index)
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertRaises(IndexError, collection.__getitem__, 4)
-
-    def test_dunder_iter(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
-
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
+    def test_dunder_iter(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.__iter__()."""
         iterator: Iterator[Action] = iter(collection)
-        self.assertIsInstance(iterator, Iterator)
+        assert isinstance(iterator, Iterator)
 
         for member in collection:
-            self.assertIsInstance(member, Action)
+            assert isinstance(member, Action)
 
-    def test_context(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_contains(self, collection: ActionCollection, index: int) -> None:
+        """Test for ActionCollection.__contains__()."""
+        assert collection[index] in collection
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        expected: str = "Context"
+    @pytest.mark.parametrize("expected", ["Context"])
+    def test_context(self, collection: ActionCollection, expected: str) -> None:
+        """Test for ActionCollection.context."""
         collection.context = expected
 
-        value: str = collection.context
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = collection.context
 
-    def test_count(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        self.assertEqual(0, collection.count)
+    def test_count(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.count."""
+        assert collection.count == self.count
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_item(self, collection: ActionCollection, index: int) -> None:
+        """Test for ActionCollection.item()."""
+        action: Action = collection.item(index)
 
-        self.assertEqual(3, collection.count)
+        assert isinstance(action, self.values[index - 1])
 
-    def test_item(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_item_out_of_range(self, collection: ActionCollection, index: int) -> None:
+        """Test for ActionCollection.item()."""
+        with pytest.raises(IndexError):
+            collection.item(index)
 
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        action: Action = collection.item(1)
-        self.assertIsInstance(action, Action)
-        self.assertEqual(ActionType.EXEC, action.type)
-
-    def test_dunder_item_zero(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
-
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertRaises(IndexError, collection.item, 0)
-
-    def test_dunder_item_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
-
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertRaises(IndexError, collection.item, 4)
-
-    def test_clear(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
-
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertEqual(3, collection.count)
+    def test_clear(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.clear()."""
+        assert collection.count == self.count
 
         collection.clear()
-        self.assertEqual(0, collection.count)
 
-    def test_create(self) -> None:
+        assert collection.count == 0
+
+    def test_create(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.create()."""
+        assert collection.count == self.count
+
+        action: Action = collection.create(ExecAction)
+
+        assert isinstance(action, ExecAction)
+        assert collection.count == self.count + 1
+
+    def test_remove(self, collection: ActionCollection) -> None:
+        """Test for ActionCollection.remove()."""
+        assert collection.count == self.count
+
+        collection.remove(self.count)
+
+        assert collection.count == self.count - 1
+
+
+class TestExecAction:
+    """Tests for ExecAction."""
+
+    @pytest.fixture
+    def action(self) -> ExecAction:
+        """Action fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
+        return task_def.actions.create(ExecAction)
 
-        self.assertEqual(0, collection.count)
-
-        action: Action = collection.create(ActionType.EXEC)
-        self.assertIsInstance(action, Action)
-        self.assertEqual(1, collection.count)
-
-    def test_remove(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: ActionCollection = task_def.actions
-
-        collection.create(ActionType.EXEC)
-        collection.create(ActionType.COM_HANDLER)
-        collection.create(ActionType.SHOW_MESSAGE)
-
-        self.assertEqual(3, collection.count)
-
-        collection.remove(2)
-        self.assertEqual(2, collection.count)
-        self.assertIsInstance(collection[2], ShowMessageAction)
-
-
-class TestExecAction(unittest.TestCase):
-    def test_create(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
-
-        self.assertIsInstance(action, ExecAction)
-
-    def test_arguments(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
-
-        expected: str = "Arguments"
+    @pytest.mark.parametrize("expected", ["Arguments"])
+    def test_arguments(self, action: ExecAction, expected: str) -> None:
+        """Test for Action.arguments."""
         action.arguments = expected
 
-        value: str = action.arguments
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.arguments
 
-    def test_path(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Path"
+    @pytest.mark.parametrize("expected", [Path("path/to/executable.exe").resolve()])
+    def test_path(self, action: ExecAction, expected: Path) -> None:
+        """Test for Action.path."""
         action.path = expected
 
-        value: str = action.path
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: Path = action.path
 
-    def test_working_directory(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ExecAction = cast(ExecAction, task_def.actions.create(ActionType.EXEC))
+        assert isinstance(obj, Path)
+        assert obj == expected
 
-        expected: str = "Working Directory"
+    @pytest.mark.parametrize("expected", [Path("working/directory/path").resolve()])
+    def test_working_directory(self, action: ExecAction, expected: Path) -> None:
+        """Test for Action.working_directory."""
         action.working_directory = expected
 
-        value: str = action.working_directory
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: Path = action.working_directory
+
+        assert isinstance(obj, Path)
+        assert obj == expected
 
 
-class TestComHandlerAction(unittest.TestCase):
-    def test_create(self) -> None:
+class TestComHandlerAction:
+    """Tests for ComHandlerAction."""
+
+    @pytest.fixture
+    def action(self) -> ComHandlerAction:
+        """Action fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        action: ComHandlerAction = cast(
-            ComHandlerAction, task_def.actions.create(ActionType.COM_HANDLER)
-        )
+        return task_def.actions.create(ComHandlerAction)
 
-        self.assertIsInstance(action, ComHandlerAction)
-
-    def test_class_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ComHandlerAction = cast(
-            ComHandlerAction, task_def.actions.create(ActionType.COM_HANDLER)
-        )
-
-        expected: str = "Class ID"
+    @pytest.mark.parametrize("expected", ["Class ID"])
+    def test_class_id(self, action: ComHandlerAction, expected: str) -> None:
+        """Test for ComHandlerAction.class_id."""
         action.class_id = expected
 
-        value: str = action.class_id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.class_id
 
-    def test_data(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ComHandlerAction = cast(
-            ComHandlerAction, task_def.actions.create(ActionType.COM_HANDLER)
-        )
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Data"
+    @pytest.mark.parametrize("expected", ["Data"])
+    def test_data(self, action: ComHandlerAction, expected: str) -> None:
+        """Test for ComHandlerAction.data."""
         action.data = expected
 
-        value: str = action.data
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.data
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestEmailAction(unittest.TestCase):
-    def test_create(self) -> None:
+class TestEmailAction:
+    """Tests for EmailAction."""
+
+    @pytest.fixture
+    def action(self) -> EmailAction:
+        """Action fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        return task_def.actions.create(EmailAction)
 
-        self.assertIsInstance(action, EmailAction)
-
-    def test_attachments(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
-
-        expected: Optional[Sequence[str]] = ("Attachments",)
+    @pytest.mark.parametrize("expected", [(), tuple(f"Attachment{i}" for i in range(5))])
+    def test_attachments(self, action: EmailAction, expected: tuple[str, ...] | None) -> None:
+        """Test for EmailAction.attachments."""
         action.attachments = expected
 
-        value: Optional[Sequence[str]] = action.attachments
-        self.assertIsInstance(value, Optional[Sequence])
-        self.assertEqual(expected, value)
+        obj: tuple[str, ...] = action.attachments
 
-    def test_bcc(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, tuple)
+        assert obj == expected
 
-        expected: str = "BCC"
+    @pytest.mark.parametrize("expected", ["BCC"])
+    def test_bcc(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.bcc."""
         action.bcc = expected
 
-        value: str = action.bcc
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.bcc
 
-    def test_body(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Body"
+    @pytest.mark.parametrize("expected", ["Body"])
+    def test_body(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.body."""
         action.body = expected
 
-        value: str = action.body
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.body
 
-    def test_cc(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "CC"
+    @pytest.mark.parametrize("expected", ["CC"])
+    def test_cc(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.cc."""
         action.cc = expected
 
-        value: str = action.cc
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.cc
 
-    def test_from_(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "From"
+    @pytest.mark.parametrize("expected", ["From"])
+    def test_from_(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.from_."""
         action.from_ = expected
 
-        value: str = action.from_
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.from_
 
-    def test_header_fields(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        value: TaskNamedValueCollection = action.header_fields
-        self.assertIsInstance(value, TaskNamedValueCollection)
-        self.assertIs(value, action.header_fields)
+    def test_header_fields(self, action: EmailAction) -> None:
+        """Test for EmailAction.header_fields."""
+        obj: TaskNamedValueCollection = action.header_fields
 
-    def test_reply_to(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, TaskNamedValueCollection)
+        assert obj is action.header_fields
 
-        expected: str = "Reply To"
+    @pytest.mark.parametrize("expected", ["Reply To"])
+    def test_reply_to(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.reply_to."""
         action.reply_to = expected
 
-        value: str = action.reply_to
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.reply_to
 
-    def test_server(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Server"
+    @pytest.mark.parametrize("expected", ["Server"])
+    def test_server(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.server."""
         action.server = expected
 
-        value: str = action.server
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.server
 
-    def test_subject(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Subject"
+    @pytest.mark.parametrize("expected", ["Subject"])
+    def test_subject(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.subject."""
         action.subject = expected
 
-        value: str = action.subject
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.subject
 
-    def test_to(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: EmailAction = cast(EmailAction, task_def.actions.create(ActionType.SEND_EMAIL))
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "To"
+    @pytest.mark.parametrize("expected", ["To"])
+    def test_to(self, action: EmailAction, expected: str) -> None:
+        """Test for EmailAction.to."""
         action.to = expected
 
-        value: str = action.to
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.to
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestShowMessageAction(unittest.TestCase):
-    def test_create(self) -> None:
+class TestShowMessageAction:
+    """Tests for ShowMessageAction."""
+
+    @pytest.fixture
+    def action(self) -> ShowMessageAction:
+        """Action fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        action: ShowMessageAction = cast(
-            ShowMessageAction, task_def.actions.create(ActionType.SHOW_MESSAGE)
-        )
+        return task_def.actions.create(ShowMessageAction)
 
-        self.assertIsInstance(action, ShowMessageAction)
-
-    def test_message_body(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ShowMessageAction = cast(
-            ShowMessageAction, task_def.actions.create(ActionType.SHOW_MESSAGE)
-        )
-
-        expected: str = "Message Body"
+    @pytest.mark.parametrize("expected", ["Message Body"])
+    def test_message_body(self, action: ShowMessageAction, expected: str) -> None:
+        """Test for ShowMessageAction.message_body."""
         action.message_body = expected
 
-        value: str = action.message_body
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.message_body
 
-    def test_title(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        action: ShowMessageAction = cast(
-            ShowMessageAction, task_def.actions.create(ActionType.SHOW_MESSAGE)
-        )
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Title"
+    @pytest.mark.parametrize("expected", ["Title"])
+    def test_title(self, action: ShowMessageAction, expected: str) -> None:
+        """Test for ShowMessageAction.title."""
         action.title = expected
 
-        value: str = action.title
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = action.title
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestTrigger(unittest.TestCase):
-    def test_enabled(self) -> None:
+# noinspection PyCompatibility
+class TestTrigger:
+    """Tests for Trigger."""
+
+    @pytest.fixture
+    def trigger(self) -> Trigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        return task_def.triggers.create(EventTrigger)
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_enabled(self, trigger: Trigger, expected: bool) -> None:
+        """Test for Trigger.enabled."""
         trigger.enabled = expected
 
-        value: bool = trigger.enabled
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = trigger.enabled
 
-    def test_end_boundary(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: Optional[datetime] = datetime.now()
+    @pytest.mark.parametrize("expected", [None, datetime.now()])
+    def test_end_boundary(self, trigger: Trigger, expected: datetime | None) -> None:
+        """Test for Trigger.end_boundary."""
         trigger.end_boundary = expected
 
-        value: Optional[datetime] = trigger.end_boundary
-        self.assertIsInstance(value, Optional[datetime])
-        self.assertEqual(expected, value)
+        obj: datetime | None = trigger.end_boundary
 
-    def test_execution_time_limit(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, datetime | None)
+        assert obj == expected
 
-        expected: relativedelta = relativedelta(days=3)
+    @pytest.mark.parametrize("expected", [relativedelta(days=3)])
+    def test_execution_time_limit(self, trigger: Trigger, expected: relativedelta) -> None:
+        """Test for Trigger.execution_time_limit."""
         trigger.execution_time_limit = expected
 
-        value: relativedelta = trigger.execution_time_limit
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.execution_time_limit
 
-    def test_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: str = "ID"
+    @pytest.mark.parametrize("expected", ["ID"])
+    def test_id(self, trigger: Trigger, expected: str) -> None:
+        """Test for Trigger.id."""
         trigger.id = expected
 
-        value: str = trigger.id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = trigger.id
 
-    def test_repetition(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        value: RepetitionPattern = trigger.repetition
-        self.assertIsInstance(value, RepetitionPattern)
-        self.assertIs(value, trigger.repetition)
+    def test_repetition(self, trigger: Trigger) -> None:
+        """Test for Trigger.repetition."""
+        obj: RepetitionPattern = trigger.repetition
 
-    def test_start_boundary(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, RepetitionPattern)
+        assert obj is trigger.repetition
 
-        expected: Optional[datetime] = datetime.now()
+    @pytest.mark.parametrize("expected", [None, datetime.now()])
+    def test_start_boundary(self, trigger: Trigger, expected: datetime | None) -> None:
+        """Test for Trigger.start_boundary."""
         trigger.start_boundary = expected
 
-        value: Optional[datetime] = trigger.start_boundary
-        self.assertIsInstance(value, Optional[datetime])
-        self.assertEqual(expected, value)
+        obj: datetime | None = trigger.start_boundary
 
-    def test_type(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: Trigger = task_def.triggers.create(TriggerType.EVENT)
+        assert isinstance(obj, datetime | None)
+        assert obj == expected
 
-        expected: TriggerType = TriggerType.EVENT
+    def test_type(self, trigger: Trigger) -> None:
+        """Test for Trigger.type."""
+        obj: int = trigger.type
 
-        value: TriggerType = trigger.type
-        self.assertIsInstance(value, TriggerType)
-        self.assertEqual(expected, value)
+        assert isinstance(obj, int)
+        assert obj == EventTrigger.type_value
 
 
-class TestTriggerCollection(unittest.TestCase):
-    def test_dunder_len(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+class TestTriggerCollection:
+    """Tests for TriggerCollection."""
 
-        self.assertEqual(0, len(collection))
+    values: Sequence[type[Trigger]] = [
+        EventTrigger,
+        TimeTrigger,
+        DailyTrigger,
+        WeeklyTrigger,
+        MonthlyTrigger,
+        MonthlyDOWTrigger,
+        IdleTrigger,
+        RegistrationTrigger,
+        BootTrigger,
+        LogonTrigger,
+        SessionStateChangeTrigger,
+    ]
+    count: int = len(values)
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        self.assertEqual(3, len(collection))
-
-    def test_dunder_getitem(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
-
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        trigger: Trigger = collection[1]
-        self.assertIsInstance(trigger, Trigger)
-        self.assertEqual(TriggerType.EVENT, trigger.type)
-
-    def test_dunder_getitem_zero(self) -> None:
+    @pytest.fixture
+    def collection(self) -> TriggerCollection:
+        """Collection fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
         collection: TriggerCollection = task_def.triggers
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
+        trigger: type[Trigger]
+        for trigger in self.values:
+            collection.create(trigger)
 
-        self.assertRaises(IndexError, collection.__getitem__, 0)
+        return collection
 
-    def test_dunder_getitem_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+    def test_dunder_len(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.__len__()."""
+        assert len(collection) == self.count
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_getitem(self, collection: TriggerCollection, index: int) -> None:
+        """Test for TriggerCollection.__getitem__()."""
+        trigger: Trigger = collection[index]
 
-        self.assertRaises(IndexError, collection.__getitem__, 4)
+        assert isinstance(trigger, self.values[index - 1])
 
-    def test_dunder_iter(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_dunder_getitem_out_of_range(self, collection: TriggerCollection, index: int) -> None:
+        """Test for TriggerCollection.__getitem__()."""
+        with pytest.raises(IndexError):
+            collection.__getitem__(index)
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
+    def test_dunder_iter(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.__iter__()."""
         iterator: Iterator[Trigger] = iter(collection)
-        self.assertIsInstance(iterator, Iterator)
+        assert isinstance(iterator, Iterator)
 
         for member in collection:
-            self.assertIsInstance(member, Trigger)
+            assert isinstance(member, Trigger)
 
-    def test_count(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_dunder_contains(self, collection: TriggerCollection, index: int) -> None:
+        """Test for TriggerCollection.__contains__()."""
+        assert collection[index] in collection
 
-        self.assertEqual(0, collection.count)
+    def test_count(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.count."""
+        assert collection.count == self.count
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
+    @pytest.mark.parametrize("index", [i + 1 for i in range(count)])
+    def test_item(self, collection: TriggerCollection, index: int) -> None:
+        """Test for TriggerCollection.item()."""
+        trigger: Trigger = collection.item(index)
 
-        self.assertEqual(3, collection.count)
+        assert isinstance(trigger, self.values[index - 1])
 
-    def test_item(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+    @pytest.mark.parametrize("index", [0, count + 1])
+    def test_item_out_of_range(self, collection: TriggerCollection, index: int) -> None:
+        """Test for TriggerCollection.item()."""
+        with pytest.raises(IndexError):
+            collection.item(index)
 
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        trigger: Trigger = collection.item(1)
-        self.assertIsInstance(trigger, Trigger)
-        self.assertEqual(TriggerType.EVENT, trigger.type)
-
-    def test_item_zero(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
-
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        self.assertRaises(IndexError, collection.item, 0)
-
-    def test_item_out_of_range(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
-
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        self.assertRaises(IndexError, collection.item, 4)
-
-    def test_clear(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
-
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        self.assertEqual(3, collection.count)
+    def test_clear(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.clear()."""
+        assert collection.count == self.count
 
         collection.clear()
-        self.assertEqual(0, collection.count)
 
-    def test_create(self) -> None:
+        assert collection.count == 0
+
+    def test_create(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.create()."""
+        assert collection.count == self.count
+
+        trigger: Trigger = collection.create(EventTrigger)
+
+        assert isinstance(trigger, EventTrigger)
+        assert collection.count == self.count + 1
+
+    def test_remove(self, collection: TriggerCollection) -> None:
+        """Test for TriggerCollection.remove()."""
+        assert collection.count == self.count
+
+        collection.remove(self.count)
+
+        assert collection.count == self.count - 1
+
+
+class TestEventTrigger:
+    """Tests for EventTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> EventTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
+        return task_def.triggers.create(EventTrigger)
 
-        self.assertEqual(0, collection.count)
-
-        trigger: Trigger = collection.create(TriggerType.EVENT)
-        self.assertIsInstance(trigger, Trigger)
-        self.assertEqual(1, collection.count)
-
-    def test_remove(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        collection: TriggerCollection = task_def.triggers
-
-        collection.create(TriggerType.EVENT)
-        collection.create(TriggerType.TIME)
-        collection.create(TriggerType.DAILY)
-
-        self.assertEqual(3, collection.count)
-
-        collection.remove(2)
-        self.assertEqual(2, collection.count)
-        self.assertIsInstance(collection[2], DailyTrigger)
-
-
-class TestEventTrigger(unittest.TestCase):
-    def test_create(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-
-        self.assertIsInstance(trigger, EventTrigger)
-
-    def test_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
-
-        expected: relativedelta = relativedelta(minutes=30)
+    @pytest.mark.parametrize("expected", [relativedelta(minutes=30)])
+    def test_delay(self, trigger: EventTrigger, expected: relativedelta) -> None:
+        """Test for EventTrigger.delay."""
         trigger.delay = expected
 
-        value: relativedelta = trigger.delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.delay
 
-    def test_subscription(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: str = "Subscription"
+    @pytest.mark.parametrize("expected", ["Subscription"])
+    def test_subscription(self, trigger: EventTrigger, expected: str) -> None:
+        """Test for EventTrigger.subscription."""
         trigger.subscription = expected
 
-        value: str = trigger.subscription
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = trigger.subscription
 
-    def test_value_queries(self) -> None:
+        assert isinstance(obj, str)
+        assert obj == expected
+
+    def test_value_queries(self, trigger: EventTrigger) -> None:
+        """Test for EventTrigger.value_queries."""
+        obj: TaskNamedValueCollection = trigger.value_queries
+
+        assert isinstance(obj, TaskNamedValueCollection)
+        assert obj is trigger.value_queries
+
+
+class TestTimeTrigger:
+    """Tests for TimeTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> TimeTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: EventTrigger = cast(EventTrigger, task_def.triggers.create(TriggerType.EVENT))
+        return task_def.triggers.create(TimeTrigger)
 
-        value: TaskNamedValueCollection = trigger.value_queries
-        self.assertIsInstance(value, TaskNamedValueCollection)
-        self.assertIs(value, trigger.value_queries)
-
-
-class TestTimeTrigger(unittest.TestCase):
-    def test_create(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: TimeTrigger = cast(TimeTrigger, task_def.triggers.create(TriggerType.TIME))
-
-        self.assertIsInstance(trigger, TimeTrigger)
-
-    def test_random_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: TimeTrigger = cast(TimeTrigger, task_def.triggers.create(TriggerType.TIME))
-
-        expected: relativedelta = relativedelta(minutes=30)
+    @pytest.mark.parametrize("expected", [relativedelta(minutes=30)])
+    def test_random_delay(self, trigger: TimeTrigger, expected: relativedelta) -> None:
+        """Test for TimeTrigger.random_delay."""
         trigger.random_delay = expected
 
-        value: relativedelta = trigger.random_delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.random_delay
+
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
 
-class TestDailyTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestDailyTrigger:
+    """Tests for DailyTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> DailyTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: DailyTrigger = cast(DailyTrigger, task_def.triggers.create(TriggerType.DAILY))
+        return task_def.triggers.create(DailyTrigger)
 
-        self.assertIsInstance(trigger, DailyTrigger)
-
-    def test_days_interval(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: DailyTrigger = cast(DailyTrigger, task_def.triggers.create(TriggerType.DAILY))
-
-        expected: int = 3
+    @pytest.mark.parametrize("expected", list(range(1, 11)))
+    def test_days_interval(self, trigger: DailyTrigger, expected: int) -> None:
+        """Test for TimeTrigger.days_interval."""
         trigger.days_interval = expected
 
-        value: int = trigger.days_interval
-        self.assertIsInstance(value, int)
-        self.assertEqual(expected, value)
+        obj: int = trigger.days_interval
+
+        assert isinstance(obj, int)
+        assert obj == expected
 
 
-class TestWeeklyTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestWeeklyTrigger:
+    """Tests for WeeklyTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> WeeklyTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: WeeklyTrigger = cast(WeeklyTrigger, task_def.triggers.create(TriggerType.WEEKLY))
+        return task_def.triggers.create(WeeklyTrigger)
 
-        self.assertIsInstance(trigger, WeeklyTrigger)
-
-    def test_days_of_week(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: WeeklyTrigger = cast(WeeklyTrigger, task_def.triggers.create(TriggerType.WEEKLY))
-
-        expected: DaysOfWeek = DaysOfWeek.THURSDAY
+    @pytest.mark.parametrize("expected", list(DaysOfWeek))
+    def test_days_of_week(self, trigger: WeeklyTrigger, expected: DaysOfWeek) -> None:
+        """Test for WeeklyTrigger.days_of_week."""
         trigger.days_of_week = expected
 
-        value: DaysOfWeek = trigger.days_of_week
-        self.assertIsInstance(value, DaysOfWeek)
-        self.assertEqual(expected, value)
+        obj: DaysOfWeek = trigger.days_of_week
 
-    def test_weeks_interval(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: WeeklyTrigger = cast(WeeklyTrigger, task_def.triggers.create(TriggerType.WEEKLY))
+        assert isinstance(obj, DaysOfWeek)
+        assert obj == expected
 
-        expected: int = 3
+    @pytest.mark.parametrize("expected", list(range(1, 11)))
+    def test_weeks_interval(self, trigger: WeeklyTrigger, expected: int) -> None:
+        """Test for WeeklyTrigger.weeks_interval."""
         trigger.weeks_interval = expected
 
-        value: int = trigger.weeks_interval
-        self.assertIsInstance(value, int)
-        self.assertEqual(expected, value)
+        obj: int = trigger.weeks_interval
+
+        assert isinstance(obj, int)
+        assert obj == expected
 
 
-class TestMonthlyTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestMonthlyTrigger:
+    """Tests for MonthlyTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> MonthlyTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyTrigger = cast(
-            MonthlyTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        return task_def.triggers.create(MonthlyTrigger)
 
-        self.assertIsInstance(trigger, MonthlyTrigger)
-
-    def test_days_of_month(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyTrigger = cast(
-            MonthlyTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
-
-        expected: DaysOfMonth = DaysOfMonth.THIRTEENTH
+    @pytest.mark.parametrize("expected", list(DaysOfMonth)[:-1])
+    def test_days_of_month(self, trigger: MonthlyTrigger, expected: DaysOfMonth) -> None:
+        """Test for MonthlyTrigger.days_of_month."""
         trigger.days_of_month = expected
 
-        value: DaysOfMonth = trigger.days_of_month
-        self.assertIsInstance(value, DaysOfMonth)
-        self.assertEqual(expected, value)
+        obj: DaysOfMonth = trigger.days_of_month
 
-    def test_months_of_year(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyTrigger = cast(
-            MonthlyTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        assert isinstance(obj, DaysOfMonth)
+        assert obj == expected
 
-        expected: MonthsOfYear = MonthsOfYear.FEBRUARY
+    @pytest.mark.parametrize("expected", list(MonthsOfYear))
+    def test_months_of_year(self, trigger: MonthlyTrigger, expected: MonthsOfYear) -> None:
+        """Test for MonthlyTrigger.months_of_year."""
         trigger.months_of_year = expected
 
-        value: MonthsOfYear = trigger.months_of_year
-        self.assertIsInstance(value, MonthsOfYear)
-        self.assertEqual(expected, value)
+        obj: MonthsOfYear = trigger.months_of_year
 
-    def test_run_on_last_day_of_month(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyTrigger = cast(
-            MonthlyTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        assert isinstance(obj, MonthsOfYear)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_run_on_last_day_of_month(self, trigger: MonthlyTrigger, expected: bool) -> None:
+        """Test for MonthlyTrigger.run_on_last_day_of_month."""
         trigger.run_on_last_day_of_month = expected
 
-        value: bool = trigger.run_on_last_day_of_month
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = trigger.run_on_last_day_of_month
+
+        assert isinstance(obj, bool)
+        assert obj == expected
 
 
-class TestMonthlyDOWTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestMonthlyDOWTrigger:
+    """Tests for MonthlyDOWTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> MonthlyDOWTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyDOWTrigger = cast(
-            MonthlyDOWTrigger, task_def.triggers.create(TriggerType.MONTHLY_DOW)
-        )
+        return task_def.triggers.create(MonthlyDOWTrigger)
 
-        self.assertIsInstance(trigger, MonthlyDOWTrigger)
-
-    def test_days_of_week(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyDOWTrigger = cast(
-            MonthlyDOWTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
-
-        expected: DaysOfWeek = DaysOfWeek.TUESDAY
+    @pytest.mark.parametrize("expected", list(DaysOfWeek))
+    def test_days_of_week(self, trigger: MonthlyDOWTrigger, expected: DaysOfWeek) -> None:
+        """Test for MonthlyDOWTrigger.days_of_week."""
         trigger.days_of_week = expected
 
-        value: DaysOfWeek = trigger.days_of_week
-        self.assertIsInstance(value, DaysOfWeek)
-        self.assertEqual(expected, value)
+        obj: DaysOfWeek = trigger.days_of_week
 
-    def test_months_of_year(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyDOWTrigger = cast(
-            MonthlyDOWTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        assert isinstance(obj, DaysOfWeek)
+        assert obj == expected
 
-        expected: MonthsOfYear = MonthsOfYear.AUGUST
+    @pytest.mark.parametrize("expected", list(MonthsOfYear))
+    def test_months_of_year(self, trigger: MonthlyDOWTrigger, expected: MonthsOfYear) -> None:
+        """Test for MonthlyDOWTrigger.months_of_year."""
         trigger.months_of_year = expected
 
-        value: MonthsOfYear = trigger.months_of_year
-        self.assertIsInstance(value, MonthsOfYear)
-        self.assertEqual(expected, value)
+        obj: MonthsOfYear = trigger.months_of_year
 
-    def test_run_on_last_week_of_month(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyDOWTrigger = cast(
-            MonthlyDOWTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        assert isinstance(obj, MonthsOfYear)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_run_on_last_week_of_month(self, trigger: MonthlyDOWTrigger, expected: bool) -> None:
+        """Test for MonthlyDOWTrigger.run_on_last_week_of_month."""
         trigger.run_on_last_week_of_month = expected
 
-        value: bool = trigger.run_on_last_week_of_month
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = trigger.run_on_last_week_of_month
 
-    def test_weeks_of_month(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: MonthlyDOWTrigger = cast(
-            MonthlyDOWTrigger, task_def.triggers.create(TriggerType.MONTHLY)
-        )
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: WeeksOfMonth = WeeksOfMonth.SECOND
+    @pytest.mark.parametrize("expected", list(WeeksOfMonth))
+    def test_weeks_of_month(self, trigger: MonthlyDOWTrigger, expected: WeeksOfMonth) -> None:
+        """Test for MonthlyDOWTrigger.weeks_of_month."""
         trigger.weeks_of_month = expected
 
-        value: WeeksOfMonth = trigger.weeks_of_month
-        self.assertIsInstance(value, WeeksOfMonth)
-        self.assertEqual(expected, value)
+        obj: WeeksOfMonth = trigger.weeks_of_month
+
+        assert isinstance(obj, WeeksOfMonth)
+        assert obj == expected
 
 
-class TestIdleTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestIdleTrigger:
+    """Tests for IdleTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> IdleTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: IdleTrigger = cast(IdleTrigger, task_def.triggers.create(TriggerType.IDLE))
-
-        self.assertIsInstance(trigger, IdleTrigger)
+        return task_def.triggers.create(IdleTrigger)
 
 
-class TestRegistrationTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestRegistrationTrigger:
+    """Tests for RegistrationTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> RegistrationTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: RegistrationTrigger = cast(
-            RegistrationTrigger, task_def.triggers.create(TriggerType.REGISTRATION)
-        )
+        return task_def.triggers.create(RegistrationTrigger)
 
-        self.assertIsInstance(trigger, RegistrationTrigger)
-
-    def test_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: RegistrationTrigger = cast(
-            RegistrationTrigger, task_def.triggers.create(TriggerType.REGISTRATION)
-        )
-
-        expected: relativedelta = relativedelta(hours=5)
+    @pytest.mark.parametrize("expected", [relativedelta(hours=5)])
+    def test_delay(self, trigger: RegistrationTrigger, expected: relativedelta) -> None:
+        """Test for RegistrationTrigger.delay."""
         trigger.delay = expected
 
-        value: relativedelta = trigger.delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.delay
+
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
 
-class TestBootTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestBootTrigger:
+    """Tests for BootTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> BootTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: BootTrigger = cast(BootTrigger, task_def.triggers.create(TriggerType.BOOT))
+        return task_def.triggers.create(BootTrigger)
 
-        self.assertIsInstance(trigger, BootTrigger)
-
-    def test_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: BootTrigger = cast(BootTrigger, task_def.triggers.create(TriggerType.BOOT))
-
-        expected: relativedelta = relativedelta(hours=5)
+    @pytest.mark.parametrize("expected", [relativedelta(hours=5)])
+    def test_delay(self, trigger: BootTrigger, expected: relativedelta) -> None:
+        """Test for BootTrigger.delay."""
         trigger.delay = expected
 
-        value: relativedelta = trigger.delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.delay
+
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
 
-class TestLogonTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestLogonTrigger:
+    """Tests for LogonTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> LogonTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: LogonTrigger = cast(LogonTrigger, task_def.triggers.create(TriggerType.LOGON))
+        return task_def.triggers.create(LogonTrigger)
 
-        self.assertIsInstance(trigger, LogonTrigger)
-
-    def test_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: LogonTrigger = cast(LogonTrigger, task_def.triggers.create(TriggerType.LOGON))
-
-        expected: relativedelta = relativedelta(hours=5)
+    @pytest.mark.parametrize("expected", [relativedelta(hours=5)])
+    def test_delay(self, trigger: LogonTrigger, expected: relativedelta) -> None:
+        """Test for BootTrigger.delay."""
         trigger.delay = expected
 
-        value: relativedelta = trigger.delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.delay
 
-    def test_user_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: LogonTrigger = cast(LogonTrigger, task_def.triggers.create(TriggerType.LOGON))
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: str = "User ID"
+    @pytest.mark.parametrize("expected", ["User ID"])
+    def test_user_id(self, trigger: LogonTrigger, expected: str) -> None:
+        """Test for LogonTrigger.user_id."""
         trigger.user_id = expected
 
-        value: str = trigger.user_id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = trigger.user_id
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestSessionStateChangeTrigger(unittest.TestCase):
-    def test_create(self) -> None:
+class TestSessionStateChangeTrigger:
+    """Tests for SessionStateChangeTrigger."""
+
+    @pytest.fixture
+    def trigger(self) -> SessionStateChangeTrigger:
+        """Trigger fixture."""
         task_def: TaskDefinition = SERVICE.new_task()
-        trigger: SessionStateChangeTrigger = cast(
-            SessionStateChangeTrigger, task_def.triggers.create(TriggerType.SESSION_STATE_CHANGE)
-        )
+        return task_def.triggers.create(SessionStateChangeTrigger)
 
-        self.assertIsInstance(trigger, SessionStateChangeTrigger)
-
-    def test_delay(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: SessionStateChangeTrigger = cast(
-            SessionStateChangeTrigger, task_def.triggers.create(TriggerType.SESSION_STATE_CHANGE)
-        )
-
-        expected: relativedelta = relativedelta(hours=5)
+    @pytest.mark.parametrize("expected", [relativedelta(hours=5)])
+    def test_delay(self, trigger: SessionStateChangeTrigger, expected: relativedelta) -> None:
+        """Test for SessionStateChangeTrigger.delay."""
         trigger.delay = expected
 
-        value: relativedelta = trigger.delay
-        self.assertIsInstance(value, relativedelta)
-        self.assertEqual(expected, value)
+        obj: relativedelta = trigger.delay
 
-    def test_state_change(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: SessionStateChangeTrigger = cast(
-            SessionStateChangeTrigger, task_def.triggers.create(TriggerType.SESSION_STATE_CHANGE)
-        )
+        assert isinstance(obj, relativedelta)
+        assert obj == expected
 
-        expected: SessionStateChangeType = SessionStateChangeType.SESSION_LOCK
+    @pytest.mark.parametrize("expected", list(SessionStateChangeType))
+    def test_state_change(
+        self, trigger: SessionStateChangeTrigger, expected: SessionStateChangeType
+    ) -> None:
+        """Test for SessionStateChangeTrigger.state_change."""
         trigger.state_change = expected
 
-        value: SessionStateChangeType = trigger.state_change
-        self.assertIsInstance(value, SessionStateChangeType)
-        self.assertEqual(expected, value)
+        obj: SessionStateChangeType = trigger.state_change
 
-    def test_user_id(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        trigger: SessionStateChangeTrigger = cast(
-            SessionStateChangeTrigger, task_def.triggers.create(TriggerType.SESSION_STATE_CHANGE)
-        )
+        assert isinstance(obj, SessionStateChangeType)
+        assert obj == expected
 
-        expected: str = "User ID"
+    @pytest.mark.parametrize("expected", ["User ID"])
+    def test_user_id(self, trigger: SessionStateChangeTrigger, expected: str) -> None:
+        """Test for SessionStateChangeTrigger.user_id."""
         trigger.user_id = expected
 
-        value: str = trigger.user_id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = trigger.user_id
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestTaskSettings(unittest.TestCase):
-    def test_allow_demand_start(self) -> None:
+# noinspection PyCompatibility
+class TestTaskSettings:
+    """Tests for TaskSettings."""
+
+    @pytest.fixture
+    def settings(self) -> TaskSettings:
+        """Settings fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        return task_def.settings
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_allow_demand_start(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.allow_demand_start."""
         settings.allow_demand_start = expected
 
-        value: bool = settings.allow_demand_start
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.allow_demand_start
 
-    def test_allow_hard_terminate(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_allow_hard_terminate(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.allow_hard_terminate."""
         settings.allow_hard_terminate = expected
 
-        value: bool = settings.allow_hard_terminate
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.allow_hard_terminate
 
-    def test_compatibility(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: Compatibility = Compatibility.V1
+    @pytest.mark.parametrize("expected", list(Compatibility))
+    def test_compatibility(self, settings: TaskSettings, expected: Compatibility) -> None:
+        """Test for TaskSettings.compatibility."""
         settings.compatibility = expected
 
-        value: Compatibility = settings.compatibility
-        self.assertIsInstance(value, Compatibility)
-        self.assertEqual(expected, value)
+        obj: Compatibility = settings.compatibility
 
-    def test_delete_expired_task_after(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, Compatibility)
+        assert obj == expected
 
-        expected: Optional[datetime] = datetime.now()
+    @pytest.mark.parametrize("expected", [None, datetime.now()])
+    def test_delete_expired_task_after(
+        self, settings: TaskSettings, expected: datetime | None
+    ) -> None:
+        """Test for TaskSettings.delete_expired_task_after."""
         settings.delete_expired_task_after = expected
 
-        value: Optional[datetime] = settings.delete_expired_task_after
-        self.assertIsInstance(value, Optional[datetime])
-        self.assertEqual(expected, value)
+        obj: datetime | None = settings.delete_expired_task_after
 
-    def test_disallow_start_if_on_batteries(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, datetime | None)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_disallow_start_if_on_batteries(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.disallow_start_if_on_batteries."""
         settings.disallow_start_if_on_batteries = expected
 
-        value: bool = settings.disallow_start_if_on_batteries
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.disallow_start_if_on_batteries
 
-    def test_enabled(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_enabled(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.enabled."""
         settings.enabled = expected
 
-        value: bool = settings.enabled
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.enabled
 
-    def test_execution_time_limit(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: Optional[relativedelta] = relativedelta(days=10)
+    @pytest.mark.parametrize("expected", [None, relativedelta(days=10)])
+    def test_execution_time_limit(
+        self, settings: TaskSettings, expected: relativedelta | None
+    ) -> None:
+        """Test for TaskSettings.execution_time_limit."""
         settings.execution_time_limit = expected
 
-        value: Optional[relativedelta] = settings.execution_time_limit
-        self.assertIsInstance(value, Optional[relativedelta])
-        self.assertEqual(expected, value)
+        obj: relativedelta | None = settings.execution_time_limit
 
-    def test_execution_time_limit_none(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, relativedelta | None)
+        assert obj == expected
 
-        expected: Optional[relativedelta] = None
-        settings.execution_time_limit = expected
-
-        value: Optional[relativedelta] = settings.execution_time_limit
-        self.assertIsInstance(value, Optional[relativedelta])
-        self.assertEqual(expected, value)
-
-    def test_hidden(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
-
-        expected: bool = False
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_hidden(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.hidden."""
         settings.hidden = expected
 
-        value: bool = settings.hidden
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.hidden
 
-    def test_idle_settings(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        value: IdleSettings = settings.idle_settings
-        self.assertIsInstance(value, IdleSettings)
-        self.assertIs(value, settings.idle_settings)
+    def test_idle_settings(self, settings: TaskSettings) -> None:
+        """Test for TaskSettings.idle_settings."""
+        obj: IdleSettings = settings.idle_settings
 
-    def test_multiple_instances(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, IdleSettings)
+        assert obj is settings.idle_settings
 
-        expected: InstancesPolicy = InstancesPolicy.IGNORE_NEW
+    @pytest.mark.parametrize("expected", list(InstancesPolicy))
+    def test_multiple_instances(self, settings: TaskSettings, expected: InstancesPolicy) -> None:
+        """Test for TaskSettings.multiple_instances."""
         settings.multiple_instances = expected
 
-        value: InstancesPolicy = settings.multiple_instances
-        self.assertIsInstance(value, InstancesPolicy)
-        self.assertEqual(expected, value)
+        obj: InstancesPolicy = settings.multiple_instances
 
-    def test_network_settings(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, InstancesPolicy)
+        assert obj == expected
 
-        value: NetworkSettings = settings.network_settings
-        self.assertIsInstance(value, NetworkSettings)
-        self.assertIs(value, settings.network_settings)
+    def test_network_settings(self, settings: TaskSettings) -> None:
+        """Test for TaskSettings.network_settings."""
+        obj: NetworkSettings = settings.network_settings
 
-    def test_priority(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, NetworkSettings)
+        assert obj is settings.network_settings
 
-        expected: int = 8
+    @pytest.mark.parametrize("expected", list(range(11)))
+    def test_priority(self, settings: TaskSettings, expected: int) -> None:
+        """Test for TaskSettings.priority."""
         settings.priority = expected
 
-        value: int = settings.priority
-        self.assertIsInstance(value, int)
-        self.assertEqual(expected, value)
+        obj: int = settings.priority
 
-    def test_restart_count(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, int)
+        assert obj == expected
 
-        expected: int = -1
+    @pytest.mark.parametrize("expected", [-1, 11])
+    def test_priority_out_of_range(self, settings: TaskSettings, expected: int) -> None:
+        """Test for TaskSettings.priority."""
+        with pytest.raises(ValueError, match="Invalid Priority."):
+            settings.priority = expected
+
+    @pytest.mark.parametrize("expected", list(range(-1, 11)))
+    def test_restart_count(self, settings: TaskSettings, expected: int) -> None:
+        """Test for TaskSettings.restart_count."""
         settings.restart_count = expected
 
-        value: int = settings.restart_count
-        self.assertIsInstance(value, int)
-        self.assertEqual(expected, value)
+        obj: int = settings.restart_count
 
-    def test_restart_interval(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, int)
+        assert obj == expected
 
-        expected: Optional[relativedelta] = relativedelta(hours=1)
+    @pytest.mark.parametrize("expected", [None, relativedelta(hours=1)])
+    def test_restart_interval(self, settings: TaskSettings, expected: relativedelta | None) -> None:
+        """Test for TaskSettings.restart_interval."""
         settings.restart_interval = expected
 
-        value: Optional[relativedelta] = settings.restart_interval
-        self.assertIsInstance(value, Optional[relativedelta])
-        self.assertEqual(expected, value)
+        obj: relativedelta | None = settings.restart_interval
 
-    def test_run_only_if_idle(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, relativedelta | None)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_run_only_if_idle(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.run_only_if_idle."""
         settings.run_only_if_idle = expected
 
-        value: bool = settings.run_only_if_idle
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.run_only_if_idle
 
-    def test_run_only_if_network_available(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_run_only_if_network_available(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.run_only_if_network_available."""
         settings.run_only_if_network_available = expected
 
-        value: bool = settings.run_only_if_network_available
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.run_only_if_network_available
 
-    def test_start_when_available(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_start_when_available(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.start_when_available."""
         settings.start_when_available = expected
 
-        value: bool = settings.start_when_available
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.start_when_available
 
-    def test_stop_if_going_on_batteries(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_stop_if_going_on_batteries(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.stop_if_going_on_batteries."""
         settings.stop_if_going_on_batteries = expected
 
-        value: bool = settings.stop_if_going_on_batteries
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.stop_if_going_on_batteries
 
-    def test_wake_to_run(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_wake_to_run(self, settings: TaskSettings, expected: bool) -> None:
+        """Test for TaskSettings.wake_to_run."""
         settings.wake_to_run = expected
 
-        value: bool = settings.wake_to_run
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.wake_to_run
 
-    def test_xml_text(self) -> None:  # TODO
-        task_def: TaskDefinition = SERVICE.new_task()
-        settings: TaskSettings = task_def.settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        settings.enabled = True
+    def test_xml_text(self, settings: TaskSettings) -> None:
+        """Test for TaskSettings.xml_text."""
+        obj: str = settings.xml_text
 
-        # value: str = settings.xml_text
-        # self.assertIsInstance(value, str)
+        assert isinstance(obj, str)
 
 
-class TestIdleSettings(unittest.TestCase):
-    def test_restart_on_idle(self) -> None:
+class TestIdleSettings:
+    """Tests for IdleSettings."""
+
+    @pytest.fixture
+    def settings(self) -> IdleSettings:
+        """Settings fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
         task_settings: TaskSettings = task_def.settings
-        settings: IdleSettings = task_settings.idle_settings
+        return task_settings.idle_settings
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_restart_on_idle(self, settings: IdleSettings, expected: bool) -> None:
+        """Test for IdleSettings.restart_on_idle."""
         settings.restart_on_idle = expected
 
-        value: bool = settings.restart_on_idle
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.restart_on_idle
 
-    def test_stop_on_idle_end(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        task_settings: TaskSettings = task_def.settings
-        settings: IdleSettings = task_settings.idle_settings
+        assert isinstance(obj, bool)
+        assert obj == expected
 
-        expected: bool = True
+    @pytest.mark.parametrize("expected", [False, True])
+    def test_stop_on_idle_end(self, settings: IdleSettings, expected: bool) -> None:
+        """Test for IdleSettings.stop_on_idle_end."""
         settings.stop_on_idle_end = expected
 
-        value: bool = settings.stop_on_idle_end
-        self.assertIsInstance(value, bool)
-        self.assertEqual(expected, value)
+        obj: bool = settings.stop_on_idle_end
+
+        assert isinstance(obj, bool)
+        assert obj == expected
 
 
-class TestNetworkSettings(unittest.TestCase):
-    def test_id(self) -> None:
+class TestNetworkSettings:
+    """Tests for NetworkSettings."""
+
+    @pytest.fixture
+    def settings(self) -> NetworkSettings:
+        """Settings fixture."""  # noqa: D401
         task_def: TaskDefinition = SERVICE.new_task()
         task_settings: TaskSettings = task_def.settings
-        settings: NetworkSettings = task_settings.network_settings
+        return task_settings.network_settings
 
-        expected: str = "ID"
+    @pytest.mark.parametrize("expected", ["ID"])
+    def test_id(self, settings: NetworkSettings, expected: str) -> None:
+        """Test for NetworkSettings.id."""
         settings.id = expected
 
-        value: str = settings.id
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = settings.id
 
-    def test_name(self) -> None:
-        task_def: TaskDefinition = SERVICE.new_task()
-        task_settings: TaskSettings = task_def.settings
-        settings: NetworkSettings = task_settings.network_settings
+        assert isinstance(obj, str)
+        assert obj == expected
 
-        expected: str = "Name"
+    @pytest.mark.parametrize("expected", ["Name"])
+    def test_name(self, settings: NetworkSettings, expected: str) -> None:
+        """Test for NetworkSettings.name."""
         settings.name = expected
 
-        value: str = settings.name
-        self.assertIsInstance(value, str)
-        self.assertEqual(expected, value)
+        obj: str = settings.name
+
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
-class TestFromDurationStr(unittest.TestCase):
-    def test_empty(self) -> None:
-        string: str = ""
-        expected: Optional[relativedelta] = None
+# noinspection PyCompatibility
+class TestFromDurationStr:
+    """Tests for from_duration_str()."""
 
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
+    value_map: Mapping[str, tuple[str, relativedelta | None]] = {
+        "empty": ("", None),
+        "zeros": ("P0Y0M0DT0H0M0S", None),
+        "ones": (
+            "P1Y1M1DT1H1M1S",
+            relativedelta(years=1, months=1, days=1, hours=1, minutes=1, seconds=1),
+        ),
+        "years": ("P1YT", relativedelta(years=1)),
+        "months": ("P1MT", relativedelta(months=1)),
+        "days": ("P1DT", relativedelta(days=1)),
+        "hours": ("PT1H", relativedelta(hours=1)),
+        "minutes": ("PT1M", relativedelta(minutes=1)),
+        "seconds": ("PT1S", relativedelta(seconds=1)),
+    }
 
-    def test_zeros(self) -> None:
-        string: str = "P0Y0M0DT0H0M0S"
-        expected: Optional[relativedelta] = None
+    @pytest.fixture(params=value_map.values(), ids=list(value_map.keys()))
+    def duration_tuple(self, request) -> tuple[str, relativedelta | None]:  # noqa: ANN001
+        """Duration tuple fixture."""
+        return request.param
 
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
+    def test_duration_tuple(self, duration_tuple: tuple[str, relativedelta | None]) -> None:
+        """Test for from_duration_str()."""
+        value: str = duration_tuple[0]
+        expected: relativedelta | None = duration_tuple[1]
 
-    def test_ones(self) -> None:
-        string: str = "P1Y1M1DT1H1M1S"
-        expected: Optional[relativedelta] = relativedelta(
-            years=1, months=1, days=1, hours=1, minutes=1, seconds=1
-        )
+        obj: relativedelta | None = from_duration_str(value)
 
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_years(self) -> None:
-        string: str = "P1YT"
-        expected: Optional[relativedelta] = relativedelta(years=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_months(self) -> None:
-        string: str = "P1MT"
-        expected: Optional[relativedelta] = relativedelta(months=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_days(self) -> None:
-        string: str = "P1DT"
-        expected: Optional[relativedelta] = relativedelta(days=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_hours(self) -> None:
-        string: str = "PT1H"
-        expected: Optional[relativedelta] = relativedelta(hours=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_minutes(self) -> None:
-        string: str = "PT1M"
-        expected: Optional[relativedelta] = relativedelta(minutes=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
-
-    def test_seconds(self) -> None:
-        string: str = "PT1S"
-        expected: Optional[relativedelta] = relativedelta(seconds=1)
-
-        result: Optional[relativedelta] = from_duration_str(string)
-        self.assertIsInstance(result, Optional[relativedelta])
-        self.assertEqual(expected, result)
+        assert isinstance(obj, relativedelta | None)
+        assert obj == expected
 
 
-class TestToDurationStr(unittest.TestCase):
-    def test_none(self) -> None:
-        value: Optional[relativedelta] = None
-        expected: str = "PT0S"
+class TestToDurationStr:
+    """Tests for to_duration_str()."""
 
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
+    value_map: Mapping[str, tuple[relativedelta | None, str]] = {
+        "empty": (None, "PT0S"),
+        "zeros": (relativedelta(years=0, months=0, days=0, hours=0, minutes=0, seconds=0), "PT0S"),
+        "ones": (
+            relativedelta(years=1, months=1, days=1, hours=1, minutes=1, seconds=1),
+            "P1Y1M1DT1H1M1S",
+        ),
+        "years": (relativedelta(years=1), "P1YT"),
+        "months": (relativedelta(months=1), "P1MT"),
+        "days": (relativedelta(days=1), "P1DT"),
+        "hours": (relativedelta(hours=1), "PT1H"),
+        "minutes": (relativedelta(minutes=1), "PT1M"),
+        "seconds": (relativedelta(seconds=1), "PT1S"),
+    }
 
-    def test_zeros(self) -> None:
-        value: Optional[relativedelta] = relativedelta(
-            years=0, months=0, days=0, hours=0, minutes=0, seconds=0
-        )
-        expected: str = "PT0S"
+    @pytest.fixture(params=value_map.values(), ids=list(value_map.keys()))
+    def duration_tuple(self, request) -> tuple[relativedelta | None, str]:  # noqa: ANN001
+        """Duration tuple fixture."""
+        return request.param
 
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
+    def test_duration_tuple(self, duration_tuple: tuple[relativedelta | None, str]) -> None:
+        """Test for to_duration_str()."""
+        value: relativedelta | None = duration_tuple[0]
+        expected: str = duration_tuple[1]
 
-    def test_ones(self) -> None:
-        value: Optional[relativedelta] = relativedelta(
-            years=1, months=1, days=1, hours=1, minutes=1, seconds=1
-        )
-        expected: str = "P1Y1M1DT1H1M1S"
+        obj: str = to_duration_str(value)
 
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_years(self) -> None:
-        value: Optional[relativedelta] = relativedelta(years=1)
-        expected: str = "P1YT"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_months(self) -> None:
-        value: Optional[relativedelta] = relativedelta(months=1)
-        expected: str = "P1MT"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_days(self) -> None:
-        value: Optional[relativedelta] = relativedelta(days=1)
-        expected: str = "P1DT"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_hours(self) -> None:
-        value: Optional[relativedelta] = relativedelta(hours=1)
-        expected: str = "PT1H"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_minutes(self) -> None:
-        value: Optional[relativedelta] = relativedelta(minutes=1)
-        expected: str = "PT1M"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
-
-    def test_seconds(self) -> None:
-        value: Optional[relativedelta] = relativedelta(seconds=1)
-        expected: str = "PT1S"
-
-        result: str = to_duration_str(value)
-        self.assertIsInstance(result, str)
-        self.assertEqual(expected, result)
+        assert isinstance(obj, str)
+        assert obj == expected
 
 
 if __name__ == "__main__":
-    unittest.main()
+    pytest.main()

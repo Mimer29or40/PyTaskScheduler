@@ -1,42 +1,90 @@
+"""Wrapper for Windows TaskScheduler."""
+
 from __future__ import annotations
 
 import functools
 import re
 from abc import ABC
+from collections.abc import Collection
+from collections.abc import Iterator
 from datetime import datetime
 from enum import Enum
 from enum import Flag
+from pathlib import Path
+from typing import TYPE_CHECKING
 from typing import ClassVar
-from typing import Iterable
-from typing import Iterator
-from typing import List
-from typing import Optional
-from typing import Sequence
-from typing import Sized
-from typing import Type
+from typing import TypeVar
 
 import win32com.client
 from dateutil.relativedelta import relativedelta
-from pywintypes import com_error  # noqa
+
+# noinspection PyUnresolvedReferences
+from pywintypes import com_error
+
+if TYPE_CHECKING:
+    from win32com.client.dynamic import CDispatch
+
+T = TypeVar("T")
 
 # ---------- PYTHON CLASSES ---------- #
+# TODO(Ryan): Implement __eq__ for classes
 
 
-class WrapperClass(ABC):
-    def __init__(self, obj):
+class _COMWrapper:
+    """Base class for a wrapped COM object."""
+
+    def __init__(self, obj: CDispatch) -> None:
+        """Create a new WrapperClass instance."""
         self._obj = obj
 
     def __str__(self) -> str:
+        """Return the str of the wrapped object."""
         return f"{self.__class__.__name__}({self._obj.__str__()})"
 
     def __repr__(self) -> str:
+        """Return the repr of the wrapped object."""
         return f"{self.__class__.__name__}({self._obj.__repr__()})"
+
+    def __eq__(self, other: _COMWrapper) -> bool:
+        """Return True if TaskFolders are equal."""
+        if not isinstance(other, _COMWrapper):
+            return False
+        return self._obj == other._obj
+
+
+class _COMWrapperCollection(_COMWrapper, Collection[T]):
+    """Base class for a wrapped COM object collection."""
+
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> T:
+        pass
+
+    def __len__(self) -> int:
+        """Return the len of the object."""
+        return self._obj.Count
+
+    def __getitem__(self, index: int) -> T:
+        """Return the item at the index of the object."""
+        try:
+            return self._obj_mapper(self._obj.Item(index))
+        except com_error:
+            raise IndexError(f"No object at index: {index}") from None
+
+    def __iter__(self) -> Iterator[T]:
+        """Return the iter of the object."""
+        # noinspection PyTypeChecker
+        return iter(map(self._obj_mapper, self._obj))
+
+    def __contains__(self, x: object, /) -> bool:
+        """Return if the value is in the object."""
+        # noinspection PyTypeChecker
+        return any(x == obj for obj in map(self._obj_mapper, self._obj))
 
 
 # ---------- CLASSES ---------- #
 
 
-class TaskService(WrapperClass):
+class TaskService(_COMWrapper):
     """For scripting, provides access to the Task Scheduler service for managing registered tasks.
 
     The TaskService.Connect method should be called before calling any of the other TaskService
@@ -45,12 +93,14 @@ class TaskService(WrapperClass):
 
     _instance: ClassVar[TaskService] = None
 
-    def __new__(cls):
+    def __new__(cls) -> TaskService:  # noqa: PYI034
+        """Create a new TaskService instance."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """Create a new TaskService instance."""
         super().__init__(win32com.client.Dispatch("Schedule.Service"))
 
     @property
@@ -113,7 +163,11 @@ class TaskService(WrapperClass):
         return self._obj.TargetServer
 
     def connect(
-        self, server_name: str = None, user: str = None, domain: str = None, password: str = None
+        self,
+        server_name: str | None = None,
+        user: str | None = None,
+        domain: str | None = None,
+        password: str | None = None,
     ) -> None:
         """For scripting, connects to a remote machine and associates all subsequent calls on this
         interface with a remote session. If the serverName parameter is empty, then this method
@@ -177,11 +231,11 @@ class TaskService(WrapperClass):
         self._obj.Connect(server_name, user, domain, password)
 
     def get_folder(self, path: str) -> TaskFolder:
-        """For scripting, gets a folder of registered tasks.
+        r"""For scripting, gets a folder of registered tasks.
 
         :param path: The path to the folder to be retrieved. Do not use a backslash following the
-          last folder name in the path. The root task folder is specified with a backslash (\\). An
-          example of a task folder path, under the root task folder, is \\MyTaskFolder. The "."
+          last folder name in the path. The root task folder is specified with a backslash (\). An
+          example of a task folder path, under the root task folder, is \MyTaskFolder. The "."
           character cannot be used to specify the current task folder and the ".." characters
           cannot be used to specify the parent task folder in the path.
         :returns: A TaskFolder object for the requested folder.
@@ -189,13 +243,12 @@ class TaskService(WrapperClass):
         try:
             return TaskFolder(self._obj.GetFolder(path))
         except com_error:
-            raise TaskFolderNotFound(f"Folder does not exist: {path!r}") from None
+            raise TaskFolderNotFoundError(f"Folder does not exist: {path!r}") from None
 
     def get_running_tasks(self, hidden: bool = False) -> RunningTaskCollection:
         """For scripting, gets a collection of running tasks.
 
-        Note
-
+        Note:
         TaskService.GetRunningTasks will only return a collection of running tasks that are running
         at or below a user's security context. For example, for members of the Administrators
         group, GetRunningTasks will return a collection of all running tasks, but for members of
@@ -205,34 +258,38 @@ class TaskService(WrapperClass):
         :param hidden: Pass in True to return all running tasks, including hidden tasks. Pass in
           False to return a collection of running tasks that are not hidden tasks.
         :returns: A RunningTaskCollection object that contains the currently running tasks.
+
         """
         return RunningTaskCollection(self._obj.GetRunningTasks(1 if hidden else 0))
 
-    def new_task(self, flags: int = 0) -> TaskDefinition:  # TODO - Create Flag Class
+    def new_task(self, flags: TaskDefinitionFlag | None = None) -> TaskDefinition:
         """For scripting, returns an empty task definition object to be filled in with settings and
         properties and then registered using the TaskFolder.RegisterTaskDefinition method.
 
-        :param flags: This parameter is reserved for future use and must be set to 0.
+        :param flags: This parameter is reserved for future use and must be set to None.
         :returns: The task definition that specifies all the information required to create a new
           task.
         """
-        return TaskDefinition(self._obj.NewTask(flags))
+        flag_value: int = 0 if flags is None else flags.value
+        return TaskDefinition(self._obj.NewTask(flag_value))
 
 
-class TaskFolder(WrapperClass):
-    """Scripting object that provides the methods that are used to register (create) tasks in the
+class TaskFolder(_COMWrapper):
+    """For scripting, a folder containing Tasks and TaskFolders.
+
+    Scripting object that provides the methods that are used to register (create) tasks in the
     folder, remove tasks from the folder, and create or remove sub-folders from the folder.
     """
 
     def __eq__(self, other: TaskFolder) -> bool:
+        """Return True if TaskFolders are equal."""
         if not isinstance(other, TaskFolder):
             return False
         return self.path == other.path
 
     @property
     def name(self) -> str:
-        """For scripting, gets the name that is used to identify the folder that
-        contains a task.
+        """For scripting, gets the name that is used to identify the folder that contains a task.
 
         :returns: The name that is used to identify the folder.
         """
@@ -240,22 +297,22 @@ class TaskFolder(WrapperClass):
 
     @property
     def path(self) -> str:
-        """For scripting, gets the path to where the folder is stored.
+        r"""For scripting, gets the path to where the folder is stored.
 
         :returns: The path to where the folder is stored. The root task folder is specified with a
-          backslash (\\). An example of a task folder path, under the root task folder, is
-          \\MyTaskFolder.
+          backslash (\). An example of a task folder path, under the root task folder, is
+          \MyTaskFolder.
         """
         return self._obj.Path
 
-    def create_folder(self, folder_name: str, security_descriptor: str = None) -> TaskFolder:
-        """For scripting, creates a folder for related tasks.
+    def create_folder(self, folder_name: str, security_descriptor: str | None = None) -> TaskFolder:
+        r"""For scripting, creates a folder for related tasks.
 
         :param folder_name: The name that is used to identify the folder. If
-          "FolderName\\SubFolder1\\SubFolder2" is specified, the entire folder tree will be created
+          "FolderName\SubFolder1\SubFolder2" is specified, the entire folder tree will be created
           if the folders do not exist. This parameter can be a relative path to the current
-          TaskFolder instance. The root task folder is specified with a backslash (\\). An example
-          of a task folder path, under the root task folder, is \\MyTaskFolder. The "." character
+          TaskFolder instance. The root task folder is specified with a backslash (\). An example
+          of a task folder path, under the root task folder, is \MyTaskFolder. The "." character
           cannot be used to specify the current task folder and the ".." characters cannot be used
           to specify the parent task folder in the path.
         :param security_descriptor: The security descriptor that is associated with the folder.
@@ -264,22 +321,22 @@ class TaskFolder(WrapperClass):
         try:
             return TaskFolder(self._obj.CreateFolder(folder_name, security_descriptor))
         except com_error:
-            raise TaskFolderExists(f"Folder already exists: {folder_name!r}") from None
+            raise TaskFolderExistsError(f"Folder already exists: {folder_name!r}") from None
 
     def delete_folder(self, folder_name: str, flags: int = 0) -> None:
-        """For scripting, deletes a sub-folder from the parent folder.
+        r"""For scripting, deletes a sub-folder from the parent folder.
 
         :param folder_name: The name of the sub-folder to be removed. The root task folder is
-          specified with a backslash (\\). This parameter can be a relative path to the folder you
+          specified with a backslash (\). This parameter can be a relative path to the folder you
           want to delete. An example of a task folder path, under the root task folder, is
-          \\MyTaskFolder. The "." character cannot be used to specify the current task folder and
+          \MyTaskFolder. The "." character cannot be used to specify the current task folder and
           the ".." characters cannot be used to specify the parent task folder in the path
         :param flags: Not supported.
         """
         try:
             self._obj.DeleteFolder(folder_name, flags)
         except com_error:
-            raise TaskFolderNotFound(f"Folder not found: {folder_name!r}") from None
+            raise TaskFolderNotFoundError(f"Folder not found: {folder_name!r}") from None
 
     def delete_task(self, name: str, flags: int = 0) -> None:
         """For scripting, deletes a task from the folder.
@@ -289,14 +346,17 @@ class TaskFolder(WrapperClass):
           cannot be used to specify the parent task folder in the path.
         :param flags: Not supported. Value is 0
         """
-        self._obj.DeleteTask(name, flags)
+        try:
+            self._obj.DeleteTask(name, flags)
+        except com_error:
+            raise TaskNotFoundError(f"Task not found: {name!r}") from None
 
     def get_folder(self, path: str) -> TaskFolder:
-        """For scripting, gets a folder that contains tasks at a specified location.
+        r"""For scripting, gets a folder that contains tasks at a specified location.
 
         param path: The path (location) to the folder. Do not use a backslash following the last
-          folder name in the path. The root task folder is specified with a backslash (\\). An
-          example of a task folder path, under the root task folder, is \\MyTaskFolder. The "."
+          folder name in the path. The root task folder is specified with a backslash (\). An
+          example of a task folder path, under the root task folder, is \MyTaskFolder. The "."
           character cannot be used to specify the current task folder and the ".." characters
           cannot be used to specify the parent task folder in the path.
         :return: The folder at the specified location. The folder is a Folder object.
@@ -304,7 +364,7 @@ class TaskFolder(WrapperClass):
         try:
             return TaskFolder(self._obj.GetFolder(path))
         except com_error:
-            raise TaskFolderNotFound(f"Folder not found: {path!r}") from None
+            raise TaskFolderNotFoundError(f"Folder not found: {path!r}") from None
 
     def get_folders(self, flags: int = 0) -> TaskFolderCollection:
         """For scripting, gets all the sub-folders in the folder.
@@ -321,22 +381,28 @@ class TaskFolder(WrapperClass):
         return self._obj.GetSecurityDescriptor(security_info)
 
     def get_task(self, path: str) -> RegisteredTask:
-        """For scripting, gets a task at a specified location in a folder.
+        r"""For scripting, gets a task at a specified location in a folder.
 
         :param path: The path (location) to the task in a folder. The root task folder is specified
-          with a backslash (\\). An example of a task folder path, under the root task folder, is
-          \\MyTaskFolder. The "." character cannot be used to specify the current task folder and
+          with a backslash (\). An example of a task folder path, under the root task folder, is
+          \MyTaskFolder. The "." character cannot be used to specify the current task folder and
           the ".." characters cannot be used to specify the parent task folder in the path.
         :return: The task at the specified location. The task is a RegisteredTask object.
         """
         return RegisteredTask(self._obj.GetTask(path))
 
-    def get_tasks(self, flags: int = 0) -> RegisteredTaskCollection:
+    def get_tasks(self, flags: GetTasksFlags | None = None) -> RegisteredTaskCollection:
         """For scripting, gets all the tasks in the folder.
 
-        :param flags: TODO
+        :param flags: Specifies whether to retrieve hidden tasks. Pass in GetTasksFlags.HIDDEN to
+          retrieve all tasks in the folder including hidden tasks, and pass in GetTasksFlags.NONE
+          to retrieve all the tasks in the folder excluding the hidden tasks.
         """
-        return RegisteredTaskCollection(self._obj.GetTasks(flags))
+        # noinspection PyTypeChecker
+        flags_value: int = GetTasksFlags.NONE.value
+        if flags is not None:
+            flags_value = flags.value
+        return RegisteredTaskCollection(self._obj.GetTasks(flags_value))
 
     def register_task(
         self,
@@ -346,7 +412,7 @@ class TaskFolder(WrapperClass):
         user_id: str,
         password: str,
         logon_type: LogonType,
-        security_descriptor: str = None,
+        security_descriptor: str | None = None,
     ) -> RegisteredTask:
         """For scripting, registers (creates) a new task in the folder using XML to define the task.
 
@@ -412,7 +478,7 @@ class TaskFolder(WrapperClass):
         user_id: str,
         password: str,
         logon_type: LogonType,
-        security_descriptor: str = None,
+        security_descriptor: str | None = None,
     ) -> RegisteredTask:
         """For scripting, registers (creates) a task in a specified location using the
         TaskDefinition object to define a task.
@@ -456,7 +522,7 @@ class TaskFolder(WrapperClass):
         return RegisteredTask(
             self._obj.RegisterTaskDefinition(
                 path,
-                definition._obj,
+                definition._obj,  # noqa: SLF001
                 flags.value,
                 user_id,
                 password,
@@ -474,19 +540,14 @@ class TaskFolder(WrapperClass):
         self._obj.SetSecurityDescriptor(security_descriptor, flags)
 
 
-class TaskFolderCollection(WrapperClass, Iterable, Sized):
+class TaskFolderCollection(_COMWrapperCollection[TaskFolder]):
     """Scripting object that provides information and control for a collection of folders that
     contain tasks.
     """
 
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> TaskFolder:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[TaskFolder]:
-        return iter(map(TaskFolder, self._obj))
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> TaskFolder:
+        return TaskFolder(obj)
 
     @property
     def count(self) -> int:
@@ -494,7 +555,7 @@ class TaskFolderCollection(WrapperClass, Iterable, Sized):
 
         :returns: The number of triggers in the collection.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> TaskFolder:
         """For scripting, gets the specified folder from the collection.
@@ -506,13 +567,10 @@ class TaskFolderCollection(WrapperClass, Iterable, Sized):
 
         :returns: A TaskFolder object that represents the requested folder.
         """
-        try:
-            return TaskFolder(self._obj.Item(index))
-        except com_error:
-            raise IndexError(f"No Folder at index: {index}") from None
+        return self[index]
 
 
-class TaskDefinition(WrapperClass):
+class TaskDefinition(_COMWrapper):
     """Scripting object that defines all the components of a task, such as the task settings,
     triggers, actions, and registration information.
 
@@ -520,6 +578,22 @@ class TaskDefinition(WrapperClass):
     When reading or writing your own XML for a task, a task definition is specified using the Task
     element of the Task Scheduler schema.
     """
+
+    def __eq__(self, other: TaskDefinition) -> bool:
+        """Return True if TaskDefinition are equal."""
+        if not isinstance(other, TaskDefinition):
+            return False
+        if self.actions != other.actions:
+            return False
+        if self.data != other.data:
+            return False
+        if self.principal != other.principal:
+            return False
+        if self.registration_info != other.registration_info:
+            return False
+        if self.settings != other.settings:
+            return False
+        return self.triggers == other.triggers
 
     @functools.cached_property
     def actions(self) -> ActionCollection:
@@ -598,10 +672,16 @@ class TaskDefinition(WrapperClass):
         self._obj.XmlText = value
 
 
-class RunningTask(WrapperClass):
+class RunningTask(_COMWrapper):
     """Scripting object that provides the methods to get information from and control a running
     task.
     """
+
+    def __eq__(self, other: RunningTask) -> bool:
+        """Return True if RunningTask are equal."""
+        if not isinstance(other, RunningTask):
+            return False
+        return self.path == other.path
 
     @property
     def current_action(self) -> str:
@@ -661,17 +741,12 @@ class RunningTask(WrapperClass):
         self._obj.Stop()
 
 
-class RunningTaskCollection(WrapperClass, Iterable, Sized):
+class RunningTaskCollection(_COMWrapperCollection[RunningTask]):
     """Scripting object that provides a collection that is used to control running tasks."""
 
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> RunningTask:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[RunningTask]:
-        return iter(map(RunningTask, self._obj))
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> RunningTask:
+        return RunningTask(obj)
 
     @property
     def count(self) -> int:
@@ -679,7 +754,7 @@ class RunningTaskCollection(WrapperClass, Iterable, Sized):
 
         :returns: The number of running tasks in the collection.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> RunningTask:
         """For scripting, gets the specified running task from the collection.
@@ -691,14 +766,20 @@ class RunningTaskCollection(WrapperClass, Iterable, Sized):
 
         :returns: A RunningTask object that contains the running task.
         """
-        return RunningTask(self._obj.Item(index))
+        return self[index]
 
 
-class RegisteredTask(WrapperClass):
+class RegisteredTask(_COMWrapper):
     """Scripting object that provides the methods that are used to run the task immediately, get
     any running instances of the task, get or set the credentials that are used to register the
     task, and the properties that describe the task.
     """
+
+    def __eq__(self, other: RegisteredTask) -> bool:
+        """Return True if RunningTask are equal."""
+        if not isinstance(other, RegisteredTask):
+            return False
+        return self.path == other.path
 
     @functools.cached_property
     def definition(self) -> TaskDefinition:
@@ -795,8 +876,7 @@ class RegisteredTask(WrapperClass):
     def get_instances(self, flags: int = 0) -> RunningTaskCollection:
         """For scripting, returns all currently running instances of the registered task.
 
-        Note
-
+        Note:
         RegisteredTask.GetInstances will only return instances of the currently running registered
         task that are running at or below a user's security context. For example, for members of
         the Administrators group, GetInstances will return all instances of the currently running
@@ -807,11 +887,12 @@ class RegisteredTask(WrapperClass):
         :param flags: This parameter is reserved for future use and must be set to 0.
         :returns: A RunningTaskCollection object that contains all currently running instances of
           the task.
+
         """
         return RunningTaskCollection(self._obj.GetInstances(flags))
 
-    def get_run_times(self, pst_start: datetime, pst_end: datetime):  # TODO - Types
-        """Gets the times that the registered task is scheduled to run during a specified time.
+    def get_run_times(self, pst_start: datetime, pst_end: datetime):  # noqa: ANN201
+        """Get the times that the registered task is scheduled to run during a specified time.
 
         Remarks
 
@@ -822,15 +903,15 @@ class RegisteredTask(WrapperClass):
         :param pst_start: The starting time for the query.
         :param pst_end: The ending time for the query.
         :returns: The requested number of runs on input and the returned number of runs on output.
-          The scheduled times that the task will run. A NULL LPSYSTEMTIME object should be
+          The scheduled times that the task will run. A NULL datetime object should be
           passed into this parameter. On return, this array contains pCount run times. You must
           free this array by a calling the CoTaskMemFree function.
           If the method succeeds, it returns S_OK. If the method returns S_FALSE, the
           pRunTimes parameter contains pCount items, but there were more runs of the task, that
           were not returned. Otherwise, it returns an HRESULT error code.
         """
-        # return self._obj.GetRunTimes(to_date_str(pst_start), to_date_str(pst_end))
-        return self._obj.GetRunTimes(pst_start, pst_end)
+        # TODO(Ryan): Parameter types
+        return self._obj.GetRunTimes(to_date_str(pst_start), to_date_str(pst_end))
 
     def get_security_descriptor(self, security_info: SecurityInformation) -> str:
         """For scripting, gets the security descriptor that is used as credentials for the
@@ -841,7 +922,7 @@ class RegisteredTask(WrapperClass):
         """
         return self._obj.GetSecurityDescriptor(security_info.value)
 
-    def run(self, params: Optional[str]) -> RunningTask:
+    def run(self, params: str | None) -> RunningTask:
         """For scripting, runs the registered task immediately.
 
         Remarks
@@ -869,7 +950,7 @@ class RegisteredTask(WrapperClass):
         """
         return RunningTask(self._obj.Run(params))
 
-    def run_ex(self, params: Optional[str], flags: RunFlags, session_id: int) -> RunningTask:
+    def run_ex(self, params: str | None, flags: RunFlags, session_id: int) -> RunningTask:
         """For scripting, runs the registered task immediately using specified flags and a session
         identifier.
 
@@ -907,7 +988,7 @@ class RegisteredTask(WrapperClass):
           as the user who is specified in the user parameter.
         :returns: A RunningTask object that defines the new instance of the task.
         """
-        return RunningTask(self._obj.RunEx(params, flags.value, session_id))
+        return RunningTask(self._obj.RunEx(params, flags.value, session_id, None))
 
     def set_security_descriptor(self, security_descriptor: str, flags: Creation) -> None:
         """For scripting, sets the security descriptor that is used as credentials for the
@@ -945,17 +1026,12 @@ class RegisteredTask(WrapperClass):
         return self._obj.Stop(flags)
 
 
-class RegisteredTaskCollection(WrapperClass, Iterable, Sized):
+class RegisteredTaskCollection(_COMWrapperCollection[RegisteredTask]):
     """Scripting object that contains all the tasks that are registered."""
 
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> RegisteredTask:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[RegisteredTask]:
-        return iter(map(RegisteredTask, self._obj))
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> RegisteredTask:
+        return RegisteredTask(obj)
 
     @property
     def count(self) -> int:
@@ -963,7 +1039,7 @@ class RegisteredTaskCollection(WrapperClass, Iterable, Sized):
 
         :returns: The number of registered tasks in the collection.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> RegisteredTask:
         """For scripting, gets the specified registered task from the collection.
@@ -975,18 +1051,15 @@ class RegisteredTaskCollection(WrapperClass, Iterable, Sized):
 
         :returns: A RegisteredTask object that contains the registered task.
         """
-        try:
-            return RegisteredTask(self._obj.Item(index))
-        except com_error:
-            raise IndexError(f"No RegisteredTask at index: {index}") from None
+        return self[index]
 
 
-class TaskVariables(WrapperClass):
+class TaskVariables(_COMWrapper):
     """Scripting object that defines task variables that can be passed as parameters to task
     handlers and external executables that are launched by tasks.
     """
 
-    def get_context(self):  # TODO - Return Type
+    def get_context(self):  # noqa: ANN201  # TODO(Ryan): Return Type
         """For scripting, used to share the context between different steps and tasks that are in
         the same job instance. This method is not implemented.
 
@@ -995,14 +1068,14 @@ class TaskVariables(WrapperClass):
         """
         return self._obj.GetContext()
 
-    def get_input(self):  # TODO - Return Type
+    def get_input(self):  # noqa: ANN201  # TODO(Ryan): Return Type
         """For scripting, gets the input variables for a task. This method is not implemented.
 
         :returns: The input variables for a task.
         """
         return self._obj.GetInput()
 
-    def set_input(self, input):  # TODO - Input Type
+    def set_input(self, input):  # noqa: A002, ANN201, ANN001  # TODO(Ryan): Input Type
         """For scripting, sets the output variables for a task. This method is not implemented.
 
         :param input: The output variables for a task.
@@ -1010,7 +1083,7 @@ class TaskVariables(WrapperClass):
         return self._obj.SetInput(input)
 
 
-class RegistrationInfo(WrapperClass):
+class RegistrationInfo(_COMWrapper):
     """Scripting object that provides the administrative information that can be used to describe
     the task. This information includes details such as a description of the task, the author of
     the task, the date the task is registered, and the security descriptor of the task.
@@ -1023,9 +1096,29 @@ class RegistrationInfo(WrapperClass):
     the RegistrationInfo element of the Task Scheduler schema.
     """
 
+    def __eq__(self, other: RegistrationInfo) -> bool:
+        """Return True if RegistrationInfo are equal."""
+        if not isinstance(other, RegistrationInfo):
+            return False
+        if self.author != other.author:
+            return False
+        if self.date != other.date:
+            return False
+        if self.description != other.description:
+            return False
+        if self.documentation != other.documentation:
+            return False
+        if self.security_descriptor != other.security_descriptor:
+            return False
+        if self.source != other.source:
+            return False
+        if self.uri != other.uri:
+            return False
+        return self.version == other.version
+
     @property
     def author(self) -> str:
-        """For scripting, gets or sets the author of the task.
+        r"""For scripting, gets or sets the author of the task.
 
         Remarks
 
@@ -1036,9 +1129,9 @@ class RegistrationInfo(WrapperClass):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The author of the task.
         """
@@ -1049,7 +1142,7 @@ class RegistrationInfo(WrapperClass):
         self._obj.Author = value
 
     @property
-    def date(self) -> Optional[datetime]:
+    def date(self) -> datetime | None:
         """For scripting, gets or sets the date and time when the task is registered.
 
         Remarks
@@ -1062,12 +1155,12 @@ class RegistrationInfo(WrapperClass):
         return from_date_str(self._obj.Date)
 
     @date.setter
-    def date(self, value: Optional[datetime]) -> None:
+    def date(self, value: datetime | None) -> None:
         self._obj.Date = to_date_str(value)
 
     @property
     def description(self) -> str:
-        """For scripting, gets or sets the description of the task.
+        r"""For scripting, gets or sets the description of the task.
 
         Remarks
 
@@ -1078,9 +1171,9 @@ class RegistrationInfo(WrapperClass):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The description of the task.
         """
@@ -1092,7 +1185,7 @@ class RegistrationInfo(WrapperClass):
 
     @property
     def documentation(self) -> str:
-        """For scripting, gets or sets any additional documentation for the task.
+        r"""For scripting, gets or sets any additional documentation for the task.
 
         Remarks
 
@@ -1103,9 +1196,9 @@ class RegistrationInfo(WrapperClass):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: Any additional documentation that is associated with the task.
         """
@@ -1116,7 +1209,7 @@ class RegistrationInfo(WrapperClass):
         self._obj.Documentation = value
 
     @property
-    def security_descriptor(self) -> Optional[str]:
+    def security_descriptor(self) -> str | None:
         """For scripting, gets or sets the security descriptor of the task. If a different security
         descriptor is supplied during task registration, it will supersede the security descriptor
         set with this property.
@@ -1131,12 +1224,12 @@ class RegistrationInfo(WrapperClass):
         return self._obj.SecurityDescriptor
 
     @security_descriptor.setter
-    def security_descriptor(self, value: Optional[str]) -> None:
+    def security_descriptor(self, value: str | None) -> None:
         self._obj.SecurityDescriptor = value
 
     @property
     def source(self) -> str:
-        """For scripting, gets or sets where the task originated from. For example, a task may
+        r"""For scripting, gets or sets where the task originated from. For example, a task may
         originate from a component, service, application, or user.
 
         Remarks
@@ -1148,9 +1241,9 @@ class RegistrationInfo(WrapperClass):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: Where the task originated from. For example, from a component, service,
           application, or user.
@@ -1211,7 +1304,7 @@ class RegistrationInfo(WrapperClass):
         self._obj.XmlText = value
 
 
-class RepetitionPattern(WrapperClass):
+class RepetitionPattern(_COMWrapper):
     """Scripting object that defines how often the task is run and how long the repetition pattern
     is repeated after the task is started.
 
@@ -1298,14 +1391,14 @@ class RepetitionPattern(WrapperClass):
         self._obj.StopAtDurationEnd = value
 
 
-class Principal(WrapperClass):
-    """Scripting object that provides the security credentials for a principal. These security
+class Principal(_COMWrapper):
+    r"""Scripting object that provides the security credentials for a principal. These security
     credentials define the security context for the tasks that are associated with the principal.
 
     Remarks
 
     When specifying an account, remember to properly use the double backslash in code to specify
-    the domain and username. For example, use DOMAIN\\UserName to specify a value for the UserId
+    the domain and username. For example, use DOMAIN\UserName to specify a value for the UserId
     property.
 
     When reading or writing XML for a task, the security credentials for a principal are specified
@@ -1316,9 +1409,25 @@ class Principal(WrapperClass):
     will return 0, and the UserId property will return Nothing.
     """
 
+    def __eq__(self, other: Principal) -> bool:
+        """Return True if Principal are equal."""
+        if not isinstance(other, Principal):
+            return False
+        if self.display_name != other.display_name:
+            return False
+        if self.group_id != other.group_id:
+            return False
+        if self.id != other.id:
+            return False
+        if self.logon_type != other.logon_type:
+            return False
+        if self.run_level != other.run_level:
+            return False
+        return self.user_id == other.user_id
+
     @property
     def display_name(self) -> str:
-        """For scripting, gets or sets the name of the principal.
+        r"""For scripting, gets or sets the name of the principal.
 
         Remarks
         When reading or writing XML for a task, the display name for a principal is specified in
@@ -1328,9 +1437,9 @@ class Principal(WrapperClass):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll, -101)
+        example, setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll, -101)
         will set the property to the value of the resource text with an identifier equal to -101 in
-        the %SystemRoot%\\System32\\ResourceName.dll file.
+        the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The name of the principal.
         """
@@ -1452,7 +1561,7 @@ class Principal(WrapperClass):
         self._obj.UserId = value
 
 
-class TaskNamedValuePair(WrapperClass, Iterable, Sized):
+class TaskNamedValuePair(_COMWrapper, Collection[str]):
     """Scripting object that is used to create a name-value pair in which the name is associated
     with the value.
 
@@ -1463,9 +1572,11 @@ class TaskNamedValuePair(WrapperClass, Iterable, Sized):
     """
 
     def __len__(self) -> int:
+        """Return the len of the object."""
         return 2
 
     def __getitem__(self, index: int) -> str:
+        """Return the item at the index of the object."""
         if index == 0:
             return self.name
         if index == 1:
@@ -1473,7 +1584,12 @@ class TaskNamedValuePair(WrapperClass, Iterable, Sized):
         raise IndexError(f"Invalid index for TaskNamedValuePair: {index}")
 
     def __iter__(self) -> Iterator[str]:
+        """Return the iter of the object."""
         return iter((self.name, self.value))
+
+    def __contains__(self, x: object, /) -> bool:
+        """Return if the value is in the object."""
+        return x == self.name or x == self.value
 
     @property
     def name(self) -> str:
@@ -1502,17 +1618,12 @@ class TaskNamedValuePair(WrapperClass, Iterable, Sized):
         self._obj.Value = value
 
 
-class TaskNamedValueCollection(WrapperClass, Iterable, Sized):
+class TaskNamedValueCollection(_COMWrapperCollection[TaskNamedValuePair]):
     """Scripting object that contains a collection of TaskNamedValuePair object name-value pairs."""
 
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> TaskNamedValuePair:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[TaskNamedValuePair]:
-        return iter(map(TaskNamedValuePair, self._obj))
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> TaskNamedValuePair:
+        return TaskNamedValuePair(obj)
 
     @property
     def count(self) -> int:
@@ -1520,7 +1631,7 @@ class TaskNamedValueCollection(WrapperClass, Iterable, Sized):
 
         :returns: The number of name-value pairs in the collection.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> TaskNamedValuePair:
         """For scripting, gets the specified name-value pair from the collection.
@@ -1532,10 +1643,7 @@ class TaskNamedValueCollection(WrapperClass, Iterable, Sized):
 
         :returns: A TaskNamedValuePair object that represents the requested pair.
         """
-        try:
-            return TaskNamedValuePair(self._obj.Item(index))
-        except com_error:
-            raise IndexError(f"No TaskNamedValuePair at index: {index}") from None
+        return self[index]
 
     def clear(self) -> None:
         """For scripting, clears the entire collection of name-value pairs."""
@@ -1561,10 +1669,20 @@ class TaskNamedValueCollection(WrapperClass, Iterable, Sized):
 # ---------- ACTION CLASSES ---------- #
 
 
-class Action(WrapperClass, ABC):
+class Action(_COMWrapper, ABC):
     """Scripting object that provides the common properties that are inherited by all action
     objects. An action object is created by the ActionCollection.Create method.
     """
+
+    type_value: int
+
+    def __eq__(self, other: Action) -> bool:
+        """Return True if TaskFolders are equal."""
+        if not isinstance(other, Action):
+            return False
+        if self.id != other.id:
+            return False
+        return self.type == other.type
 
     @property
     def id(self) -> str:
@@ -1581,8 +1699,8 @@ class Action(WrapperClass, ABC):
     def id(self, value: str) -> None:
         self._obj.Id = value
 
-    @functools.cached_property
-    def type(self) -> ActionType:
+    @property
+    def type(self) -> int:
         """For scripting, gets the type of the action.
 
         The action type is defined when the action is created and cannot be changed later. For
@@ -1592,41 +1710,44 @@ class Action(WrapperClass, ABC):
 
         :return: This property returns one of the following TASK_ACTION_TYPE enumeration constants.
         """
-        return ActionType(self._obj.Type)
+        return self._obj.Type
 
 
-class ActionCollection(WrapperClass, Iterable, Sized):
+if TYPE_CHECKING:
+    TAction = TypeVar("TAction", bound=Action)
+
+
+class ActionCollection(_COMWrapperCollection[Action]):
     """Scripting object that contains the actions performed by the task.
 
     When reading or writing XML, the actions of a task are specified in the Actions element of the
     Task Scheduler schema.
     """
 
+    def __eq__(self, other: ActionCollection) -> bool:
+        """Return True if ActionCollection are equal."""
+        if not isinstance(other, ActionCollection):
+            return False
+        if len(self) != len(other):
+            return False
+        return all(a == b for a, b in zip(self, other, strict=True))
+
     @staticmethod
-    def get_action_class(type: ActionType) -> Type[Action]:
-        if type == ActionType.EXEC:
+    def _get_action_class(action_type: int) -> type[Action]:
+        if action_type == ExecAction.type_value:
             return ExecAction
-        elif type == ActionType.COM_HANDLER:
+        if action_type == ComHandlerAction.type_value:
             return ComHandlerAction
-        elif type == ActionType.SEND_EMAIL:
+        if action_type == EmailAction.type_value:
             return EmailAction
-        elif type == ActionType.SHOW_MESSAGE:
+        if action_type == ShowMessageAction.type_value:
             return ShowMessageAction
-        else:
-            raise RuntimeError(f"Invalid type: {type}")
+        raise RuntimeError(f"Invalid type: {action_type}")
 
-    def __len__(self) -> int:
-        return self.count
-
-    def __getitem__(self, index: int) -> Action:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[Action]:
-        def mapper(action_obj) -> Action:
-            action_class: Type[Action] = self.get_action_class(ActionType(action_obj.Type))
-            return action_class(action_obj)
-
-        return iter(map(mapper, self._obj))
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> Action:
+        action_class: type[Action] = cls._get_action_class(obj.Type)
+        return action_class(obj)
 
     @property
     def context(self) -> str:
@@ -1648,7 +1769,7 @@ class ActionCollection(WrapperClass, Iterable, Sized):
 
         The number of actions in the collection. The collection can contain up to 32 actions.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> Action:
         """For scripting, gets a specified action from the collection.
@@ -1660,29 +1781,23 @@ class ActionCollection(WrapperClass, Iterable, Sized):
 
         :returns: An Action object that represents the requested action.
         """
-        try:
-            action_obj = self._obj.Item(index)
-            action_class: Type[Action] = self.get_action_class(ActionType(action_obj.Type))
-            return action_class(action_obj)
-        except com_error:
-            raise IndexError(f"No Action at index: {index}") from None
+        return self[index]
 
     def clear(self) -> None:
         """For scripting, clears all the actions from the collection."""
         self._obj.Clear()
 
-    def create(self, type: ActionType) -> Action:
+    def create(self, cls: type[TAction]) -> TAction:
         """For scripting, creates and adds a new action to the collection.
 
         Remarks
 
         You cannot add more than 32 actions to the collection.
 
-        :param type: This parameter is set to one of the following ActionType enumeration constants.
+        :param cls: This parameter is set to one of the following Action types.
         :returns: An Action object that represents the new action.
         """
-        action_class: Type[Action] = self.get_action_class(type)
-        return action_class(self._obj.Create(type.value))
+        return cls(self._obj.Create(cls.type_value))
 
     def remove(self, index: int) -> None:
         """For scripting, removes the specified action from the collection.
@@ -1701,7 +1816,7 @@ class ExecAction(Action):
     """Scripting object that represents an action that executes a command-line operation.
 
     If environment variables are used in the Path, Arguments, or WorkingDirectory properties, then
-    the values of the environment variables are cached and used when the Taskeng.exe (the task
+    the values of the environment variables are cached and used when the TaskEng.exe (the task
     engine) is launched. Changes to the environment variables that occur after the task engine is
     launched will not be used by the task engine.
 
@@ -1711,6 +1826,18 @@ class ExecAction(Action):
     When reading or writing XML, an execution action is specified in the Exec element of the Task
     Scheduler schema.
     """
+
+    type_value = 0
+
+    def __eq__(self, other: ExecAction) -> bool:
+        """Return True if TaskFolders are equal."""
+        if not super().__eq__(other):
+            return False
+        if self.arguments != other.arguments:
+            return False
+        if self.path != other.path:
+            return False
+        return self.working_directory == other.working_directory
 
     @property
     def arguments(self) -> str:
@@ -1728,7 +1855,7 @@ class ExecAction(Action):
         self._obj.Arguments = value
 
     @property
-    def path(self) -> str:
+    def path(self) -> Path:
         """For scripting, gets or sets the path to an executable file.
 
         This action performs a command-line operation. For example, the action could run a script
@@ -1742,14 +1869,14 @@ class ExecAction(Action):
 
         :return: The path to an executable file.
         """
-        return self._obj.Path
+        return Path(self._obj.Path)
 
     @path.setter
-    def path(self, value: str) -> None:
-        self._obj.Path = value
+    def path(self, value: Path) -> None:
+        self._obj.Path = str(value.resolve())
 
     @property
-    def working_directory(self) -> str:
+    def working_directory(self) -> Path:
         """For scripting, gets or sets the directory that contains either the executable file or
         the files that are used by the executable file.
 
@@ -1762,11 +1889,11 @@ class ExecAction(Action):
         :return: The directory that contains either the executable file or the files that are used
           by the executable file.
         """
-        return self._obj.WorkingDirectory
+        return Path(self._obj.WorkingDirectory)
 
     @working_directory.setter
-    def working_directory(self, value: str) -> None:
-        self._obj.WorkingDirectory = value
+    def working_directory(self, value: Path) -> None:
+        self._obj.WorkingDirectory = str(value.resolve())
 
 
 class ComHandlerAction(Action):
@@ -1779,6 +1906,8 @@ class ComHandlerAction(Action):
     When reading or writing XML, a COM handler action is specified in the ComHandler element of the
     Task Scheduler schema.
     """
+
+    type_value = 5
 
     @property
     def class_id(self) -> str:
@@ -1826,8 +1955,10 @@ class EmailAction(Action):
     SendEmail element of the Task Scheduler schema.
     """
 
+    type_value = 6
+
     @property
-    def attachments(self) -> Optional[Sequence[str]]:
+    def attachments(self) -> tuple[str, ...]:
         """[This object is no longer supported. Please use IExecAction with the powershell
         Send-MailMessage cmdlet as a workaround.]
 
@@ -1844,7 +1975,7 @@ class EmailAction(Action):
         return self._obj.Attachments
 
     @attachments.setter
-    def attachments(self, value: Optional[Sequence[str]]) -> None:
+    def attachments(self, value: tuple[str, ...]) -> None:
         self._obj.Attachments = value
 
     @property
@@ -1867,7 +1998,7 @@ class EmailAction(Action):
 
     @property
     def body(self) -> str:
-        """[This object is no longer supported. Please use IExecAction with the powershell
+        r"""[This object is no longer supported. Please use IExecAction with the powershell
         Send-MailMessage cmdlet as a workaround.]
 
         For scripting, gets or sets the body of the email that contains the email message.
@@ -1879,9 +2010,9 @@ class EmailAction(Action):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The body of the email that contains the email message.
         """
@@ -1985,7 +2116,7 @@ class EmailAction(Action):
 
     @property
     def subject(self) -> str:
-        """[This object is no longer supported. Please use IExecAction with the powershell
+        r"""[This object is no longer supported. Please use IExecAction with the powershell
         Send-MailMessage cmdlet as a workaround.]
 
         For scripting, gets or sets the subject of the email message.
@@ -1998,9 +2129,9 @@ class EmailAction(Action):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The subject of the email message.
         """
@@ -2047,9 +2178,11 @@ class ShowMessageAction(Action):
     ShowMessage element of the Task Scheduler schema.
     """
 
+    type_value = 7
+
     @property
     def message_body(self) -> str:
-        """[This object is no longer supported. You can use IExecAction with the Windows scripting
+        r"""[This object is no longer supported. You can use IExecAction with the Windows scripting
         MsgBox function to show a message in the user session.]
 
         For scripting, gets or sets the message text that is displayed in the body of the message
@@ -2064,9 +2197,9 @@ class ShowMessageAction(Action):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The message text that is displayed in the body of the message box.
         """
@@ -2078,7 +2211,7 @@ class ShowMessageAction(Action):
 
     @property
     def title(self) -> str:
-        """[This object is no longer supported. You can use IExecAction with the Windows scripting
+        r"""[This object is no longer supported. You can use IExecAction with the Windows scripting
         MsgBox function to show a message in the user session.]
 
         For scripting, gets or sets the title of the message box.
@@ -2092,9 +2225,9 @@ class ShowMessageAction(Action):
         .dll file. A specialized string is used to reference the text from the resource file. The
         format of the string is $(@ [Dll], [ResourceID]) where [Dll] is the path to the .dll file
         that contains the resource and [ResourceID] is the identifier for the resource text. For
-        example, the setting this property value to $(@ %SystemRoot%\\System32\\ResourceName.dll,
+        example, the setting this property value to $(@ %SystemRoot%\System32\ResourceName.dll,
         -101) will set the property to the value of the resource text with an identifier equal to
-        -101 in the %SystemRoot%\\System32\\ResourceName.dll file.
+        -101 in the %SystemRoot%\System32\ResourceName.dll file.
 
         :returns: The title of the message box.
         """
@@ -2108,9 +2241,10 @@ class ShowMessageAction(Action):
 # ---------- TRIGGER CLASSES ---------- #
 
 
-class Trigger(WrapperClass, ABC):
-    """Scripting object that provides the common properties that are inherited by all
-    trigger objects.
+# noinspection GrazieInspection
+class Trigger(_COMWrapper, ABC):
+    """Scripting object that provides the common properties that are inherited by all trigger
+    objects.
 
     Remarks
 
@@ -2132,6 +2266,8 @@ class Trigger(WrapperClass, ABC):
     When reading or writing XML, the triggers of a task are specified in the Triggers
     element of the Task Scheduler schema.
     """
+
+    type_value: int
 
     @property
     def enabled(self) -> bool:
@@ -2221,7 +2357,7 @@ class Trigger(WrapperClass, ABC):
         return RepetitionPattern(self._obj.Repetition)
 
     @property
-    def start_boundary(self) -> Optional[datetime]:
+    def start_boundary(self) -> datetime | None:
         """For scripting, gets or sets the date and time when the trigger is activated.
 
         When reading or writing XML for a task, the trigger start boundary is specified
@@ -2237,19 +2373,23 @@ class Trigger(WrapperClass, ABC):
         return from_date_str(self._obj.StartBoundary)
 
     @start_boundary.setter
-    def start_boundary(self, value: Optional[datetime]) -> None:
+    def start_boundary(self, value: datetime | None) -> None:
         self._obj.StartBoundary = to_date_str(value)
 
     @property
-    def type(self) -> TriggerType:
+    def type(self) -> int:
         """For scripting, gets the type of the trigger. The trigger type is defined when
         the trigger is created and cannot be changed later. For information on creating
         a trigger, see TriggerCollection.Create.
         """
-        return TriggerType(self._obj.Type)
+        return self._obj.Type
 
 
-class TriggerCollection(WrapperClass, Iterable, Sized):
+if TYPE_CHECKING:
+    TTrigger = TypeVar("TTrigger", bound=Trigger)
+
+
+class TriggerCollection(_COMWrapperCollection[Trigger]):
     """Scripting object that is used to add to, remove from, and retrieve the triggers of a task.
 
     Remarks
@@ -2261,46 +2401,45 @@ class TriggerCollection(WrapperClass, Iterable, Sized):
     """
 
     @staticmethod
-    def get_trigger_class(type: TriggerType) -> Type[Trigger]:
-        if type == TriggerType.EVENT:
+    def _get_trigger_class(trigger_type: int) -> type[Trigger]:  # noqa: C901
+        if trigger_type == EventTrigger.type_value:
             return EventTrigger
-        elif type == TriggerType.TIME:
+        if trigger_type == TimeTrigger.type_value:
             return TimeTrigger
-        elif type == TriggerType.DAILY:
+        if trigger_type == DailyTrigger.type_value:
             return DailyTrigger
-        elif type == TriggerType.WEEKLY:
+        if trigger_type == WeeklyTrigger.type_value:
             return WeeklyTrigger
-        elif type == TriggerType.MONTHLY:
+        if trigger_type == MonthlyTrigger.type_value:
             return MonthlyTrigger
-        elif type == TriggerType.MONTHLY_DOW:
+        if trigger_type == MonthlyDOWTrigger.type_value:
             return MonthlyDOWTrigger
-        elif type == TriggerType.IDLE:
+        if trigger_type == IdleTrigger.type_value:
             return IdleTrigger
-        elif type == TriggerType.REGISTRATION:
+        if trigger_type == RegistrationTrigger.type_value:
             return RegistrationTrigger
-        elif type == TriggerType.BOOT:
+        if trigger_type == BootTrigger.type_value:
             return BootTrigger
-        elif type == TriggerType.LOGON:
+        if trigger_type == LogonTrigger.type_value:
             return LogonTrigger
-        elif type == TriggerType.SESSION_STATE_CHANGE:
+        if trigger_type == SessionStateChangeTrigger.type_value:
             return SessionStateChangeTrigger
-        # elif type == TriggerType.CUSTOM_TRIGGER:
-        #     return (self._obj.Create(type.value))
-        else:
-            raise RuntimeError(f"Invalid type: {type}")
+        if trigger_type == CustomTrigger.type_value:
+            return CustomTrigger
+        raise RuntimeError(f"Invalid type: {trigger_type}")
 
-    def __len__(self) -> int:
-        return self.count
+    @classmethod
+    def _obj_mapper(cls, obj: CDispatch) -> Trigger:
+        trigger_class: type[Trigger] = cls._get_trigger_class(obj.Type)
+        return trigger_class(obj)
 
-    def __getitem__(self, index: int) -> Trigger:
-        return self.item(index)
-
-    def __iter__(self) -> Iterator[Trigger]:
-        def mapper(trigger_obj) -> Trigger:
-            trigger_class: Type[Trigger] = self.get_trigger_class(TriggerType(trigger_obj.Type))
-            return trigger_class(trigger_obj)
-
-        return iter(map(mapper, self._obj))
+    def __eq__(self, other: TriggerCollection) -> bool:
+        """Return True if TriggerCollection are equal."""
+        if not isinstance(other, TriggerCollection):
+            return False
+        if len(self) != len(other):
+            return False
+        return all(a == b for a, b in zip(self, other, strict=True))
 
     @property
     def count(self) -> int:
@@ -2308,7 +2447,7 @@ class TriggerCollection(WrapperClass, Iterable, Sized):
 
         :returns: The number of triggers in the collection.
         """
-        return self._obj.Count
+        return len(self)
 
     def item(self, index: int) -> Trigger:
         """For scripting, gets the specified trigger from the collection.
@@ -2320,30 +2459,24 @@ class TriggerCollection(WrapperClass, Iterable, Sized):
 
         :returns: A Trigger object that represents the requested trigger.
         """
-        try:
-            trigger_obj = self._obj.Item(index)
-            trigger_class: Type[Trigger] = self.get_trigger_class(TriggerType(trigger_obj.Type))
-            return trigger_class(trigger_obj)
-        except com_error:
-            raise IndexError(f"No Trigger at index: {index}") from None
+        return self[index]
 
     def clear(self) -> None:
         """For scripting, clears all triggers from the collection."""
         self._obj.Clear()
 
-    def create(self, type: TriggerType) -> Trigger:
+    def create(self, cls: type[TTrigger]) -> TTrigger:
         """For scripting, creates a new trigger for the task.
 
         Remarks
 
         For information about each trigger type see Trigger Types.
 
-        :param type: This parameter is set to one of the following TriggerType enumeration
+        :param cls: This parameter is set to one of the following TriggerType enumeration
           constants.
         :returns: A Trigger object that represents the new trigger.
         """
-        trigger_class: Type[Trigger] = self.get_trigger_class(type)
-        return trigger_class(self._obj.Create(type.value))
+        return cls(self._obj.Create(cls.type_value))
 
     def remove(self, index: int) -> None:
         """For scripting, removes the specified trigger from the collection of triggers used by the
@@ -2369,6 +2502,8 @@ class EventTrigger(Trigger):
     When reading or writing your own XML for a task, an event trigger is specified using the
     EventTrigger element of the Task Scheduler schema.
     """
+
+    type_value = 0
 
     @property
     def delay(self) -> relativedelta:
@@ -2464,7 +2599,7 @@ class EventTrigger(Trigger):
     @value_queries.setter
     def value_queries(self, value: TaskNamedValueCollection) -> None:
         self._value_queries = value
-        self._obj.ValueQueries = value._obj
+        self._obj.ValueQueries = value._obj  # noqa: SLF001
 
 
 class TimeTrigger(Trigger):
@@ -2477,6 +2612,8 @@ class TimeTrigger(Trigger):
     When reading or writing XML for a task, an idle trigger is specified using the TimeTrigger
     element of the Task Scheduler schema.
     """
+
+    type_value = 1
 
     @property
     def random_delay(self) -> relativedelta:
@@ -2507,6 +2644,8 @@ class DailyTrigger(TimeTrigger):
     When reading or writing your own XML for a task, a daily trigger is specified using the
     ScheduleByDay element of the Task Scheduler schema.
     """
+
+    type_value = 2
 
     @property
     def days_interval(self) -> int:
@@ -2541,6 +2680,8 @@ class WeeklyTrigger(TimeTrigger):
     When reading or writing your own XML for a task, a weekly trigger is specified using the
     ScheduleByWeek element of the Task Scheduler schema.
     """
+
+    type_value = 3
 
     @property
     def days_of_week(self) -> DaysOfWeek:
@@ -2586,6 +2727,8 @@ class MonthlyTrigger(TimeTrigger):
     When reading or writing your own XML for a task, a monthly trigger is specified using the
     ScheduleByMonth element of the Task Scheduler schema.
     """
+
+    type_value = 4
 
     @property
     def days_of_month(self) -> DaysOfMonth:
@@ -2637,6 +2780,8 @@ class MonthlyDOWTrigger(TimeTrigger):
     ScheduleByMonthDayOfWeek element of the Task Scheduler schema.
     """
 
+    type_value = 5
+
     @property
     def days_of_week(self) -> DaysOfWeek:
         """For scripting, gets or sets the days of the week during which the task runs.
@@ -2676,6 +2821,10 @@ class MonthlyDOWTrigger(TimeTrigger):
 
     @property
     def weeks_of_month(self) -> WeeksOfMonth:
+        """For scripting, gets or sets the weeks of the month during which the task runs.
+
+        :returns: A bitwise mask that indicates the days of the week during which the task runs.
+        """
         return WeeksOfMonth(self._obj.WeeksOfMonth)
 
     @weeks_of_month.setter
@@ -2683,6 +2832,7 @@ class MonthlyDOWTrigger(TimeTrigger):
         self._obj.WeeksOfMonth = value.value
 
 
+# noinspection GrazieInspection
 class IdleTrigger(Trigger):
     """Scripting object that represents a trigger that starts a task when an idle condition occurs.
     For information about idle conditions, see Task Idle Conditions.
@@ -2701,7 +2851,10 @@ class IdleTrigger(Trigger):
     property. This behavior does not occur if the task stops by itself.
     """
 
+    type_value = 6
 
+
+# noinspection GrazieInspection
 class RegistrationTrigger(Trigger):
     """Scripting object that represents a trigger that starts a task when the task is registered or
     updated.
@@ -2713,6 +2866,8 @@ class RegistrationTrigger(Trigger):
     registered on is shutdown or restarted during the delay, before the task runs, then the task
     will not run and the delay will be lost.
     """
+
+    type_value = 7
 
     @property
     def delay(self) -> relativedelta:
@@ -2740,6 +2895,7 @@ class RegistrationTrigger(Trigger):
         self._obj.Delay = to_duration_str(value)
 
 
+# noinspection GrazieInspection
 class BootTrigger(Trigger):
     """Scripting object that represents a trigger that starts a task when the system is booted.
 
@@ -2753,6 +2909,8 @@ class BootTrigger(Trigger):
     When creating your own XML for a task, a boot trigger is specified using the BootTrigger
     element of the Task Scheduler schema.
     """
+
+    type_value = 8
 
     @property
     def delay(self) -> relativedelta:
@@ -2790,6 +2948,8 @@ class LogonTrigger(Trigger):
     element of the Task Scheduler schema.
     """
 
+    type_value = 9
+
     @property
     def delay(self) -> relativedelta:
         """For scripting, gets or sets a value that indicates the amount of time between when the
@@ -2813,7 +2973,7 @@ class LogonTrigger(Trigger):
 
     @property
     def user_id(self) -> str:
-        """For scripting, gets or sets the identifier of the user.
+        r"""For scripting, gets or sets the identifier of the user.
 
         This property can be in one of the following formats:
 
@@ -2829,7 +2989,7 @@ class LogonTrigger(Trigger):
         When reading or writing XML for a task, the logon user identifier is specified using the
         UserId element of the Task Scheduler schema.
 
-        :return: The identifier of the user. For example, "MyDomain\\MyName" or for a local
+        :return: The identifier of the user. For example, "MyDomain\MyName" or for a local
         account, "Administrator".
         """
         return self._obj.UserId
@@ -2846,6 +3006,8 @@ class SessionStateChangeTrigger(Trigger):
     When reading or writing your own XML for a task, a session state change trigger is specified
     using the SessionStateChangeTrigger element of the Task Scheduler schema.
     """
+
+    type_value = 11
 
     @property
     def delay(self) -> relativedelta:
@@ -2893,10 +3055,16 @@ class SessionStateChangeTrigger(Trigger):
         self._obj.UserId = value
 
 
+class CustomTrigger(Trigger):
+    """Custom Trigger."""
+
+    type_value = 12
+
+
 # ---------- SETTINGS CLASSES ---------- #
 
 
-class TaskSettings(WrapperClass):
+class TaskSettings(_COMWrapper):
     """A scripting object that provides the settings that the Task Scheduler service uses to perform
     the task.
 
@@ -2973,7 +3141,7 @@ class TaskSettings(WrapperClass):
         self._obj.Compatibility = value.value
 
     @property
-    def delete_expired_task_after(self) -> Optional[datetime]:
+    def delete_expired_task_after(self) -> datetime | None:
         """For scripting, gets or sets the amount of time that the Task Scheduler will wait before
         deleting the task after it expires. If no value is specified for this property, then the
         Task Scheduler service will not delete the task.
@@ -2995,7 +3163,7 @@ class TaskSettings(WrapperClass):
         return from_date_str(self._obj.DeleteExpiredTaskAfter)
 
     @delete_expired_task_after.setter
-    def delete_expired_task_after(self, value: Optional[datetime]) -> None:
+    def delete_expired_task_after(self, value: datetime | None) -> None:
         self._obj.DeleteExpiredTaskAfter = to_date_str(value)
 
     @property
@@ -3034,7 +3202,7 @@ class TaskSettings(WrapperClass):
         self._obj.Enabled = value
 
     @property
-    def execution_time_limit(self) -> Optional[relativedelta]:
+    def execution_time_limit(self) -> relativedelta | None:
         """For scripting, gets or sets the amount of time that is allowed to complete the task. By
         default, a task will be stopped 72 hours after it starts to run. You can change this by
         changing this setting.
@@ -3050,11 +3218,10 @@ class TaskSettings(WrapperClass):
           value of PT0S will enable the task to run indefinitely. When this parameter is set to
           Nothing, the execution time limit is infinite.
         """
-
         return from_duration_str(self._obj.ExecutionTimeLimit)
 
     @execution_time_limit.setter
-    def execution_time_limit(self, value: Optional[relativedelta]) -> None:
+    def execution_time_limit(self, value: relativedelta | None) -> None:
         self._obj.ExecutionTimeLimit = to_duration_str(value)
 
     @property
@@ -3170,7 +3337,7 @@ class TaskSettings(WrapperClass):
         self._obj.RestartCount = value
 
     @property
-    def restart_interval(self) -> Optional[relativedelta]:
+    def restart_interval(self) -> relativedelta | None:
         """For scripting, gets or sets a value that specifies how long the Task Scheduler will
         attempt to restart the task.
 
@@ -3189,7 +3356,7 @@ class TaskSettings(WrapperClass):
         return from_duration_str(self._obj.RestartInterval)
 
     @restart_interval.setter
-    def restart_interval(self, value: Optional[relativedelta]) -> None:
+    def restart_interval(self, value: relativedelta | None) -> None:
         self._obj.RestartInterval = to_duration_str(value)
 
     @property
@@ -3298,7 +3465,7 @@ class TaskSettings(WrapperClass):
         self._obj.XmlText = value
 
 
-class IdleSettings(WrapperClass):
+class IdleSettings(_COMWrapper):
     """A scripting object that specifies how the Task Scheduler performs tasks when the computer is
     in an idle condition. For information about idle conditions, see Task Idle Conditions.
 
@@ -3310,6 +3477,7 @@ class IdleSettings(WrapperClass):
 
     Note:
     IdleSettings.IdleDuration and IdleSettings.WaitTimeout are deprecated.
+
     """
 
     @property
@@ -3346,7 +3514,7 @@ class IdleSettings(WrapperClass):
         self._obj.StopOnIdleEnd = value
 
 
-class NetworkSettings(WrapperClass):
+class NetworkSettings(_COMWrapper):
     """For scripting, provides the settings that the Task Scheduler service uses to obtain a
     network profile.
 
@@ -3383,27 +3551,20 @@ class NetworkSettings(WrapperClass):
 # ---------- ENUMS ---------- #
 
 
-class ActionType(Enum):
-    EXEC: ActionType = 0
-    """This action performs a command-line operation. For example, the action can run a script,
-    launch an executable, or, if the name of a document is provided, find its associated
-    application and launch the application with the document.
-    """
-    COM_HANDLER: ActionType = 5
-    """This action fires a handler. This action can only be used if the task Compatibility property
-    is set to TASK_COMPATIBILITY_V2.
-    """
-    SEND_EMAIL: ActionType = 6
-    """This action sends email message. This action can only be used if the task Compatibility
-    property is set to TASK_COMPATIBILITY_V2.
-    """
-    SHOW_MESSAGE: ActionType = 7
-    """This action shows a message box. This action can only be used if the task Compatibility
-    property is set to TASK_COMPATIBILITY_V2.
-    """
-
-
 class Compatibility(Enum):
+    """Defines what versions of Task Scheduler or the AT command that the task is compatible with.
+
+    Remarks
+
+    Task compatibility, which is set through the Compatibility property, should only be set to
+    TASK_COMPATIBILITY_V1 if a task needs to be accessed or modified from a Windows XP, Windows
+    Server 2003, or Windows 2000 computer. Otherwise, it is recommended that Task Scheduler 2.0
+    compatibility be used because the task will have more features.
+
+    Once the task Compatibility property is set to TASK_COMPATIBILITY_V2 and the task is
+    registered, then the task Compatibility property cannot be changed to TASK_COMPATIBILITY_V1.
+    """
+
     AT: Compatibility = 0
     """The task is compatible with the AT command."""
     V1: Compatibility = 1
@@ -3417,6 +3578,8 @@ class Compatibility(Enum):
 
 
 class Creation(Flag):
+    """A TASK_CREATION constant."""
+
     VALIDATE_ONLY: Creation = 0x1
     """The Task Scheduler service checks the syntax of the XML that describes the task but does not
     register the task. This constant cannot be combined with the TASK_CREATE, TASK_UPDATE, or
@@ -3452,12 +3615,20 @@ class Creation(Flag):
     """
 
 
-class Flags(Flag):
-    HIDDEN: Flags = 0x1
+class GetTasksFlags(Flag):
+    """Flags passed to TaskFolder.get_tasks()."""
+
+    NONE: GetTasksFlags = 0x0
+    """Enumerates all tasks, excluding tasks that are hidden."""
+    HIDDEN: GetTasksFlags = 0x1
     """Enumerates all tasks, including tasks that are hidden."""
 
 
 class InstancesPolicy(Enum):
+    """Defines how the Task Scheduler handles existing instances of the task when it starts a new
+    instance of the task.
+    """
+
     PARALLEL: InstancesPolicy = 0
     """Starts new instance while an existing instance is running."""
     QUEUE: InstancesPolicy = 1
@@ -3469,6 +3640,8 @@ class InstancesPolicy(Enum):
 
 
 class LogonType(Enum):
+    """Defines what logon technique is used to run the registered task."""
+
     NONE: LogonType = 0
     """The logon method is not specified. Used for non-NT credentials."""
     PASSWORD: LogonType = 1
@@ -3490,7 +3663,7 @@ class LogonType(Enum):
     """
     INTERACTIVE_TOKEN_OR_PASSWORD: LogonType = 6
     """Not in use; currently identical to TASK_LOGON_PASSWORD.
-    
+
     Windows 10, version 1511, Windows 10, version 1507, Windows 8.1, Windows Server 2012 R2,
     Windows 8, Windows Server 2012, Windows Vista and Windows Server 2008:  First use the
     interactive token. If the user is not logged on (no interactive token is available), then the
@@ -3500,6 +3673,10 @@ class LogonType(Enum):
 
 
 class ProcessTokenIDType(Enum):
+    """Defines the types of process security identifier (SID) that can be used by tasks. These
+    changes are used to specify the type of process SID in the Principal.
+    """
+
     NONE: ProcessTokenIDType = 0
     """No changes will be made to the process token groups list."""
     UNRESTRICTED: ProcessTokenIDType = 1
@@ -3512,6 +3689,8 @@ class ProcessTokenIDType(Enum):
 
 
 class RunFlags(Flag):
+    """Defines how a task is run."""
+
     NO_FLAGS: RunFlags = 0
     """The task is run with all flags ignored."""
     AS_SELF: RunFlags = 0x1
@@ -3527,6 +3706,10 @@ class RunFlags(Flag):
 
 
 class RunLevel(Enum):
+    """The identifier that is used to specify the privilege level that is required to run the tasks
+    that are associated with the principal.
+    """
+
     LUA: RunLevel = 0
     """Tasks will be run with the least privileges."""
     HIGHEST: RunLevel = 1
@@ -3534,6 +3717,13 @@ class RunLevel(Enum):
 
 
 class SessionStateChangeType(Enum):
+    """Defines what kind of Terminal Server session state change you can use to trigger a task to
+    start.
+
+    These changes are used to specify the type of state change in the ISessionStateChangeTrigger
+    interface.
+    """
+
     CONSOLE_CONNECT: SessionStateChangeType = 1
     """Terminal Server console connection state change. For example, when you connect to a user
     session on the local computer by switching users on the computer.
@@ -3561,6 +3751,8 @@ class SessionStateChangeType(Enum):
 
 
 class State(Enum):
+    """Defines the different states that a registered task can be in."""
+
     UNKNOWN: State = 0
     """The state of the task is unknown."""
     DISABLED: State = 1
@@ -3575,55 +3767,8 @@ class State(Enum):
     """One or more instances of the task is running."""
 
 
-class TriggerType(Enum):
-    EVENT: TriggerType = 0
-    """Triggers the task when a specific event occurs. For more information about event triggers,
-    see IEventTrigger.
-    """
-    TIME: TriggerType = 1
-    """Triggers the task at a specific time of day. For more information about time triggers, see
-    ITimeTrigger.
-    """
-    DAILY: TriggerType = 2
-    """Triggers the task on a daily schedule. For example, the task starts at a specific time every
-    day, every other day, or every third day. For more information about daily triggers, see
-    IDailyTrigger.
-    """
-    WEEKLY: TriggerType = 3
-    """Triggers the task on a weekly schedule. For example, the task starts at 8:00 AM on a
-    specific day every week or other week. For more information about weekly triggers, see
-    IWeeklyTrigger.
-    """
-    MONTHLY: TriggerType = 4
-    """Triggers the task on a monthly schedule. For example, the task starts on specific days of
-    specific months. For more information about monthly triggers, see IMonthlyTrigger.
-    """
-    MONTHLY_DOW: TriggerType = 5
-    """Triggers the task on a monthly day-of-week schedule. For example, the task starts on a
-    specific days of the week, weeks of the month, and months of the year. For more information
-    about monthly day-of-week triggers, see IMonthlyDOWTrigger.
-    """
-    IDLE: TriggerType = 6
-    """Triggers the task when the computer goes into an idle state. For more information about idle
-    triggers, see IIdleTrigger.
-    """
-    REGISTRATION: TriggerType = 7
-    """Triggers the task when the task is registered. For more information about registration
-    triggers, see IRegistrationTrigger.
-    """
-    BOOT: TriggerType = 8
-    """Triggers the task when the computer boots. For more information about boot triggers, see
-    IBootTrigger.
-    """
-    LOGON: TriggerType = 9
-    """Triggers the task when a specific user logs on. For more information about logon triggers,
-    see ILogonTrigger.
-    """
-    SESSION_STATE_CHANGE: TriggerType = 11
-    """Triggers the task when a specific user session state changes. For more information about
-    session state change triggers, see ISessionStateChangeTrigger.
-    """
-    CUSTOM_TRIGGER: TriggerType = 12
+class TaskDefinitionFlag(Flag):
+    """Flags passed to TaskService.new_task()."""
 
 
 class SecurityInformation(Flag):
@@ -3659,6 +3804,8 @@ class SecurityInformation(Flag):
 
 
 class DaysOfMonth(Flag):
+    """Flag enumeration for MonthlyTrigger."""
+
     FIRST: DaysOfMonth = 0x1
     SECOND: DaysOfMonth = 0x2
     THIRD: DaysOfMonth = 0x4
@@ -3694,6 +3841,8 @@ class DaysOfMonth(Flag):
 
 
 class DaysOfWeek(Flag):
+    """Flag enumeration for MonthlyDOWTrigger."""
+
     SUNDAY: DaysOfWeek = 0x1
     MONDAY: DaysOfWeek = 0x2
     TUESDAY: DaysOfWeek = 0x4
@@ -3704,6 +3853,8 @@ class DaysOfWeek(Flag):
 
 
 class MonthsOfYear(Flag):
+    """Flag enumeration for MonthlyDOWTrigger."""
+
     JANUARY: MonthsOfYear = 0x1
     FEBRUARY: MonthsOfYear = 0x2
     MARCH: MonthsOfYear = 0x4
@@ -3719,6 +3870,8 @@ class MonthsOfYear(Flag):
 
 
 class WeeksOfMonth(Flag):
+    """Flag enumeration for MonthlyDOWTrigger."""
+
     FIRST: WeeksOfMonth = 0x1
     SECOND: WeeksOfMonth = 0x2
     THIRD: WeeksOfMonth = 0x4
@@ -3728,35 +3881,35 @@ class WeeksOfMonth(Flag):
 # ---------- PYTHON EXCEPTIONS ---------- #
 
 
-class TaskFolderNotFound(Exception):
-    pass
+class TaskFolderNotFoundError(Exception):
+    """Exception raised when a task folder is not found."""
 
 
-class TaskFolderExists(Exception):
-    pass
+class TaskFolderExistsError(Exception):
+    """Exception raised when a task folder exists."""
 
 
-class TaskNotFound(Exception):
-    pass
+class TaskNotFoundError(Exception):
+    """Exception raised when a task is not found."""
 
 
-class TaskExists(Exception):
-    pass
+class TaskExistsError(Exception):
+    """Exception raised when a task exists."""
 
 
 # ---------- USEFUL FUNCTIONS ---------- #
 
 
 def xml_time(
-    dt: datetime = None,
+    dt: datetime | None = None,
     /,
     *,
-    year: int = None,
-    month: int = None,
-    day: int = None,
-    hour: int = None,
-    minute: int = None,
-    second: int = None,
+    year: int | None = None,
+    month: int | None = None,
+    day: int | None = None,
+    hour: int | None = None,
+    minute: int | None = None,
+    second: int | None = None,
 ) -> str:
     """Get the time for the trigger start_boundary and end_boundary.
 
@@ -3781,30 +3934,33 @@ def xml_time(
     return dt.isoformat()
 
 
-def from_date_str(string: str) -> Optional[datetime]:
+def from_date_str(string: str) -> datetime | None:
+    """Convert a date string to an optional datetime object."""
     if string == "":
         return None
-    return datetime.fromisoformat(string)
+    return datetime.fromisoformat(string[:26])
 
 
-def to_date_str(dt: Optional[datetime], default: str = "") -> str:
+def to_date_str(dt: datetime | None, default: str = "") -> str:
+    """Convert an optional datetime to a date string."""
     if dt is None:
         return default
     return dt.isoformat()
 
 
 # PnYnMnDTnHnMnS
-duration_pattern: re.Pattern = re.compile(
+_duration_pattern: re.Pattern = re.compile(
     r"P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?",
     re.IGNORECASE,
 )
 
 
-def from_duration_str(string: str) -> Optional[relativedelta]:
+def from_duration_str(string: str) -> relativedelta | None:
+    """Convert a duration string to an optional relativedelta object."""
     if string == "":
         return None
 
-    match: re.Match = duration_pattern.match(string)
+    match: re.Match = _duration_pattern.match(string)
     if match is None:
         return None
 
@@ -3828,11 +3984,12 @@ def from_duration_str(string: str) -> Optional[relativedelta]:
     )
 
 
-def to_duration_str(rd: Optional[relativedelta], default: str = "PT0S") -> str:
+def to_duration_str(rd: relativedelta | None, default: str = "PT0S") -> str:
+    """Convert an optional relativedelta to a duration string."""
     if rd is None:
         return default
 
-    parts: List[str] = ["P"]
+    parts: list[str] = ["P"]
 
     years: int = rd.years
     if years > 0:
